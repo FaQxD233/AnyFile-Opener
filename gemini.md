@@ -1,7 +1,7 @@
 # AnyFile X - Project Gemini Modernization
 
 ![Project Banner](https://img.shields.io/badge/Project-AnyFile%20X-blueviolet?style=for-the-badge&logo=android)
-![Version](https://img.shields.io/badge/Version-1.0.0--Stable-green?style=for-the-badge)
+![Status](https://img.shields.io/badge/Status-Active%20Development-green?style=for-the-badge)
 ![UI](https://img.shields.io/badge/UI-Compose%20%2B%20Material%203-orange?style=for-the-badge&logo=jetpackcompose)
 
 > **AnyFile X** (formerly Open Bridge / AnyFile Opener) is a high-performance, intent-driven Android file routing utility. It serves as the "Universal Translator" for the Android filesystem, ensuring that every file has a home and every intent finds its destination.
@@ -17,14 +17,14 @@ Project Gemini represents a complete architectural overhaul and rebranding of th
 - **Namespace Migration**: Fully transitioned to the streamlined `com.anyfile.x` package namespace across all components, activities, and providers.
 - **Visual Refresh**: Implementation of a modern Material 3 design system (`AnyFileOpenerTheme`) with full support for Dynamic Color (Material You) and pure black AMOLED Dark Mode.
 - **Identity Unification**: Consolidated all launcher and settings flows under a unified Compose-driven experience, while preserving `MainActivity` as a high-speed, transparent intent gatekeeper.
-- **Official Repository**: Synchronized and hosted at [AnyFile-Opener](https://github.com/tapman104/AnyFile-Opener.git).
+- **Repository**: Maintained in the [FaQxD233 fork](https://github.com/FaQxD233/AnyFile-Opener.git).
 
 ### 🛠 Architecture & Tech Stack
 
-- **Core Engine**: Binary-level MIME detection (`MimeDetector`) capable of deep-peeking ZIP structures (APK, EPUB, DOCX) and script heuristics (Shebangs) using deterministic memory buffering.
+- **Core Engine**: Binary-level MIME detection (`MimeDetector`) with confidence, evidence, bounded ZIP inspection, and script heuristics.
 - **UI Framework**: Modern hybrid architecture combining **Jetpack Compose** (`LauncherScreen`, `SettingsScreen`) with high-performance **ViewBinding** bottom sheets (`InspectBottomSheet`, `OpenAsBottomSheet`) and lifecycle-aware coroutines (`lifecycleScope.launch(Dispatchers.IO)`).
 - **Intent Routing**: Advanced URI permission bridging (`IntentRouter`) that solves the Android "Access Denied" bottleneck for cross-app file sharing from restricted cache folders.
-- **Build Infrastructure**: Production-hardened Gradle configuration (`app/build.gradle.kts`) with externalized signing (`keystore.properties`) and graceful fallback for development builds.
+- **Build Infrastructure**: A manually triggered GitHub Actions workflow builds and verifies APKs, with optional release-signing secrets and a debug fallback.
 
 ---
 
@@ -45,6 +45,8 @@ A deep-dive tool into file metadata and structure:
 ### 🗂 Recent Files & Storage Shortcuts
 - **Recent File History**: DataStore-backed storage (`RecentFileStore`) tracking recently analyzed files for quick re-opening.
 - **Home Screen Widget**: A custom Android app widget (`FolderWidgetProvider`) offering one-tap access to system storage roots.
+- **Multi-file Queue**: `ACTION_SEND_MULTIPLE` shares are processed sequentially with open, skip, and cancel controls.
+- **Default App Rules**: Exact MIME rules take priority over extension rules and can be managed from Settings.
 
 ---
 
@@ -53,19 +55,19 @@ A deep-dive tool into file metadata and structure:
 To ensure long-term reliability and prevent the "messed up" states typical of legacy intent-handling apps, AnyFile X implements several architectural "locks":
 
 ### 🧵 Lifecycle-Safe I/O
-- **De-coupled Execution**: All heavy file analysis in `OpenAsBottomSheet` and `InspectBottomSheet` is performed using `lifecycleScope.launch(Dispatchers.IO)`.
-- **Reference Safety**: To prevent `IllegalStateException` when a user closes the UI while a file is being read, background tasks use `applicationContext` and local copies of the `ContentResolver`. This "locks" the task to the application lifecycle rather than the transient UI lifecycle.
+- **De-coupled Execution**: Heavy file analysis runs on `Dispatchers.IO`.
+- **Reference Safety**: Bottom-sheet work uses `viewLifecycleOwner.lifecycleScope`, so closing or recreating a view cancels pending UI updates.
 
 ### 🧩 Intent Integrity
 - **Transparent Bridge**: The `MainActivity` acts as a dedicated intent gatekeeper. It does not hold UI state, which ensures that complex URI data is passed cleanly to the Compose layer without being dropped during configuration changes (like screen rotation).
-- **URI Permission Forwarding**: Implements a robust "Pre-emptive Granting" logic that manually propagates read permissions to target apps before the system chooser appears, eliminating common "Permission Denied" crashes.
+- **URI Permission Forwarding**: Read access is attached to the launched intent and its `ClipData`; unrelated chooser candidates are not pre-authorized.
 
 ### 🏗️ Build Hardening
-- **Signature Security**: The signing configuration in `build.gradle.kts` defensively checks for the existence of `keystore.properties`. If missing, it gracefully skips signing rather than crashing the build process.
+- **Signature Security**: Release signing is enabled only when all credentials and the actual keystore file are available.
 
 ### 🔒 Signature Locking (Detection Engine)
-- **Deep-Peek Verification**: To prevent "MIME-hijacking" or incorrect routing, the engine performs recursive inspection of ZIP structures. It "locks" the identification only after verifying internal manifests (e.g., `AndroidManifest.xml` for APKs), ensuring that a generic ZIP is never mistakenly opened as a specialized format.
-- **Buffer Integrity**: Uses a fixed-size 33KB buffer for all detection tasks, ensuring deterministic memory usage and preventing OOM (Out Of Memory) errors during the analysis of massive multi-gigabyte files.
+- **Bounded Container Verification**: ZIP inspection limits entry count, per-entry bytes, and total decompressed bytes before falling back to header/extension evidence.
+- **Buffer Integrity**: Initial detection uses a fixed 33KB header buffer; the inspector has a separate 64KB display limit.
 
 ---
 
@@ -74,7 +76,7 @@ To ensure long-term reliability and prevent the "messed up" states typical of le
 - [x] **Namespace Migration** (`com.anyfile.x`)
 - [x] **Material 3 Implementation** (`AnyFileOpenerTheme`, Dynamic Color, AMOLED Dark Mode)
 - [x] **Hybrid UI Architecture** (Jetpack Compose + ViewBinding BottomSheets)
-- [x] **Lifecycle Stability Fixes** (Resolved `IllegalStateException` crashes via ApplicationContext decoupling)
+- [x] **Lifecycle Stability Fixes** (`viewLifecycleOwner`-bound bottom-sheet work)
 - [x] **Binary Inspector UI** (Hex & ASCII dumps, pagination, metadata inspection)
 - [x] **Quick Access Folder Routing** (One-tap containing folder navigation)
 - [x] **Production Signing Configuration** (Graceful `keystore.properties` support)
@@ -84,8 +86,9 @@ To ensure long-term reliability and prevent the "messed up" states typical of le
 
 ## 🗺 Roadmap (Gemini Next)
 
-- [ ] **Batch Processing**: Simultaneous inspection and redirection of multiple files.
-- [ ] **Custom MIME Rules**: User-definable magic byte rules and custom extension overrides.
+- [x] **Batch Processing**: Sequential handling of shared files with queue controls.
+- [x] **Default App Rules**: Per-MIME and per-extension target application rules.
+- [ ] **Custom Detection Rules**: User-definable magic-byte and extension-to-MIME overrides.
 - [x] **Quick Access**: Jump directly to the containing folder of any analyzed file with one tap.
 - [x] **Hex & ASCII Inspector**: Native lightweight hex/ASCII preview inside the inspection sheet.
 

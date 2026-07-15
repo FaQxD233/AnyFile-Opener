@@ -1,0 +1,120 @@
+name: Build Android
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '版本号 (必填，例如: v1.0.1)'
+        required: true
+        default: 'v1.0.1'
+      create_release:
+        description: '创建 GitHub Release'
+        required: true
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: version
+        shell: bash
+        run: |
+          version="${{ inputs.version }}"
+          echo "tag=${version}" >> "$GITHUB_OUTPUT"
+          echo "name=${version#v}" >> "$GITHUB_OUTPUT"
+          echo "code=$((1000 + GITHUB_RUN_NUMBER))" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android packages
+        shell: bash
+        run: |
+          set +o pipefail
+          yes | sdkmanager --licenses >/dev/null
+          set -o pipefail
+          sdkmanager --install \
+            "platforms;android-34" \
+            "build-tools;34.0.0"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Prepare optional release signing
+        shell: bash
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          if [ -n "$ANDROID_KEYSTORE_BASE64" ] && \
+             [ -n "$ANDROID_KEYSTORE_PASSWORD" ] && \
+             [ -n "$ANDROID_KEY_ALIAS" ] && \
+             [ -n "$ANDROID_KEY_PASSWORD" ]; then
+            echo "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/release.keystore"
+            echo "ANDROID_KEYSTORE_PATH=$RUNNER_TEMP/release.keystore" >> "$GITHUB_ENV"
+            echo "BUILD_TASK=assembleRelease" >> "$GITHUB_ENV"
+            echo "APK_VARIANT=release" >> "$GITHUB_ENV"
+          else
+            echo "No complete signing secret set was found; building a debug APK."
+            echo "BUILD_TASK=assembleDebug" >> "$GITHUB_ENV"
+            echo "APK_VARIANT=debug" >> "$GITHUB_ENV"
+          fi
+
+      - name: Verify and build APK
+        shell: bash
+        env:
+          VERSION_NAME: ${{ steps.version.outputs.name }}
+          VERSION_CODE: ${{ steps.version.outputs.code }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          chmod +x ./gradlew
+          ./gradlew --no-daemon clean testDebugUnitTest lintDebug "$BUILD_TASK"
+
+      - name: Collect APKs
+        shell: bash
+        run: |
+          mkdir -p dist
+          index=0
+          while IFS= read -r apk; do
+            index=$((index + 1))
+            suffix=""
+            if [ "$index" -gt 1 ]; then suffix="-$index"; fi
+            cp "$apk" "dist/AnyFile-Opener-${{ inputs.version }}-${APK_VARIANT}${suffix}.apk"
+          done < <(find "app/build/outputs/apk/$APK_VARIANT" -type f -name '*.apk' | sort)
+          ls -lah dist
+
+      - name: Upload APK artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: anyfile-opener-android-${{ inputs.version }}
+          path: dist/*.apk
+          if-no-files-found: error
+
+      - name: Create GitHub Release
+        if: ${{ inputs.create_release }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: AnyFile Opener ${{ inputs.version }}
+          files: dist/*.apk
+          generate_release_notes: true

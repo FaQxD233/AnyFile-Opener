@@ -15,15 +15,22 @@ object ByteReader {
      * Returns an empty array on failure; never throws.
      */
     fun readBytes(contentResolver: ContentResolver, uri: Uri, offset: Long, count: Int): ByteArray {
+        if (offset < 0 || count <= 0) return ByteArray(0)
         return try {
             contentResolver.openInputStream(uri)?.use { stream ->
-                skipFully(stream, offset)
+                if (!skipFully(stream, offset)) return@use ByteArray(0)
                 val buffer = ByteArray(count)
                 var totalRead = 0
                 while (totalRead < count) {
                     val bytesRead = stream.read(buffer, totalRead, count - totalRead)
                     if (bytesRead == -1) break
-                    totalRead += bytesRead
+                    if (bytesRead == 0) {
+                        val singleByte = stream.read()
+                        if (singleByte == -1) break
+                        buffer[totalRead++] = singleByte.toByte()
+                    } else {
+                        totalRead += bytesRead
+                    }
                 }
                 if (totalRead > 0) {
                     if (totalRead == count) buffer else buffer.copyOf(totalRead)
@@ -37,13 +44,20 @@ object ByteReader {
         }
     }
 
-    private fun skipFully(stream: InputStream, n: Long) {
+    private fun skipFully(stream: InputStream, n: Long): Boolean {
         var remaining = n
         while (remaining > 0) {
             val skipped = stream.skip(remaining)
-            if (skipped <= 0) break
-            remaining -= skipped
+            if (skipped > 0) {
+                remaining -= skipped
+            } else {
+                // Some ContentProvider streams do not implement skip(). Reading one
+                // byte guarantees progress without returning duplicate pages.
+                if (stream.read() == -1) return false
+                remaining--
+            }
         }
+        return true
     }
 
     fun readHeader(contentResolver: ContentResolver, uri: Uri, count: Int = 256): ByteArray {

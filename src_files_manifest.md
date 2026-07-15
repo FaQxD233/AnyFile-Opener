@@ -76,7 +76,6 @@ app/src
 AnyFile X leverages a hybrid configuration: XML layouts for complex bottom sheet designs and RecyclerView binds, and Jetpack Compose for the main screens.
 
 ### 📐 1. Layouts (`res/layout/`)
-* **[`activity_settings.xml`](file:///c:/Users/tapman/Desktop/open%20with%20apk/app/src/main/res/layout/activity_settings.xml)**: Legacy shell for settings wrapper (though mostly composed).
 * **[`bottom_sheet_open_as.xml`](file:///c:/Users/tapman/Desktop/open%20with%20apk/app/src/main/res/layout/bottom_sheet_open_as.xml)**: Renders the Open As selection grid, display name headers, and the Quick Open chip.
 * **[`bottom_sheet_inspect.xml`](file:///c:/Users/tapman/Desktop/open%20with%20apk/app/src/main/res/layout/bottom_sheet_inspect.xml)**: Hosts the binary hex viewer scrolls, headers, and "Load More" controls.
 * **[`item_file_type.xml`](file:///c:/Users/tapman/Desktop/open%20with%20apk/app/src/main/res/layout/item_file_type.xml)**: Represents individual cells in the FileType chooser (emoji text + labels).
@@ -84,7 +83,6 @@ AnyFile X leverages a hybrid configuration: XML layouts for complex bottom sheet
 
 ### 🧭 2. App XML metadata (`res/xml/`)
 * **[`folder_widget_info.xml`](file:///c:/Users/tapman/Desktop/open%20with%20apk/app/src/main/res/xml/folder_widget_info.xml)**: Declares Android widget parameters (dimensions, initial layout, update frequencies).
-* **[`paths.xml`](file:///c:/Users/tapman/Desktop/open%20with%20apk/app/src/main/res/xml/paths.xml)**: Declares directory rules for the internal `FileProvider` so other apps can read exported files.
 
 ### 🎨 3. Design Assets & Configs (`res/values/` & `res/drawable/`)
 * **`values/colors.xml` & `values/styles.xml`**: Defines XML application themes (including `Theme.OpenBridge.Transparent` for backgroundless main activity redirects).
@@ -95,7 +93,7 @@ AnyFile X leverages a hybrid configuration: XML layouts for complex bottom sheet
 ## 🛡️ Manifest Configuration (`app/src/main/AndroidManifest.xml`)
 
 The [**`AndroidManifest.xml`**](file:///c:/Users/tapman/Desktop/open%20with%20apk/app/src/main/AndroidManifest.xml) acts as the routing blueprint:
-- **Scoped Storage & Permissions**: Requests `READ_EXTERNAL_STORAGE` and `MANAGE_EXTERNAL_STORAGE` to parse internal file data.
+- **Scoped Storage**: Uses SAF and temporary URI grants without broad external-storage permissions.
 - **Intent Gateway (`MainActivity`)**: Intercepts generic file intents by binding to `ACTION_VIEW`, `ACTION_SEND`, and `ACTION_SEND_MULTIPLE` for `*/*` MIME types, allowing AnyFile X to act as a system-wide "Open With..." option.
 - **Package Visibility Queries**: Specifically queries package visibility for `com.android.documentsui` to enable direct folder jumping.
 
@@ -113,11 +111,11 @@ The [**`AndroidManifest.xml`**](file:///c:/Users/tapman/Desktop/open%20with%20ap
 
 AnyFile X features strict safeguarding to prevent common Android lifecycle/permission bugs:
 
-1. **Decoupled Lifecycle I/O** (Implemented in `OpenBridgeViewModel.kt` & `InspectBottomSheet.kt`):
-   All resource reading operations are bound to the `viewModelScope` or `lifecycleScope` executing on `Dispatchers.IO`, utilizing `applicationContext` to prevent memory leaks and `IllegalStateException`s if the UI sheet is dismissed mid-read.
+1. **Decoupled Lifecycle I/O** (Implemented in `LauncherViewModel.kt` & the bottom sheets):
+   Resource reading runs on `Dispatchers.IO`; view-bound work uses `viewLifecycleOwner.lifecycleScope` so dismissed sheets cannot update destroyed bindings.
 2. **Intent Integrity** (Implemented in `MainActivity.kt`):
    The gatekeeper `MainActivity` holds no Compose or UI state. It handles the incoming intent immediately, showing the bottom sheet dialog on top of a transparent window, avoiding crashes or intent data drops during configuration changes.
 3. **Permission Bridging** (Implemented in `IntentRouter.kt`):
-   Pre-emptively queries matching packages and invokes `grantUriPermission` on target packages prior to starting the chooser, eliminating permission errors when third-party apps read shared files.
+   Read permission is attached to the selected launch intent and `ClipData`; unrelated chooser candidates are not granted access.
 4. **Signature Locking** (Implemented in `MimeDetector.kt`):
    Performs deep recursive inspection of ZIP headers up to 30 files, specifically verifying manifests (`AndroidManifest.xml` for APK, etc.) to guarantee that generic ZIP archives are never misidentified.

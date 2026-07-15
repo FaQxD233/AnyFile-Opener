@@ -15,14 +15,14 @@
 
 ## 🖼 App Screenshot
 
-![App screenshot](images/app-screenshot.svg)
+![App screenshot](images/photo_2026-05-31_19-16-11.jpg)
 
 
 ---
 
 ## 📂 Documentation
 For detailed technical information, architecture diagrams, and feature lists, please refer to:
-👉 **[PROJECTBUILD.md](./PROJECTBUILD.md)**
+👉 **[Project notes](./gemini.md)**
 
 ---
 
@@ -31,11 +31,16 @@ For detailed technical information, architecture diagrams, and feature lists, pl
 ### 1. The "Open with" Flow (Passive)
 Simply choose **AnyFile Opener** when clicking a file in any app. The bridge will analyze the file and offer the best categories (Video, Audio, APK, etc.) to re-dispatch the file correctly.
 
+Multiple shared files are kept in a sequential queue. Each item can be opened,
+skipped, or used to cancel the remaining queue.
+
 ### 2. The Launcher Flow (Active)
 Open the app directly to:
 - **Pick a File**: Browse storage and manually select a file to open.
 - **Force MIME**: Manually type a MIME type (e.g., `application/pdf`) to force-open a mislabelled file.
 - **Inspect**: Check the internal header bytes of a file to verify its true type.
+- **Default App Rules**: Save and manage per-MIME or per-extension target apps.
+- **Detection Details**: Review confidence, detection source, and concrete evidence.
 
 ### 3. Home Screen Widget
 Add the **Storage Root** widget to your home screen for a one-tap shortcut to the system's internal storage provider.
@@ -57,6 +62,14 @@ Add the **Storage Root** widget to your home screen for a one-tap shortcut to th
 ```powershell
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
+
+### GitHub Actions
+
+The `Build Android` workflow is intentionally manual. Open the repository's
+**Actions** tab, run the workflow, enter a version, and choose whether to create a
+GitHub Release. Without signing secrets it produces a debug APK. With
+`ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, and
+`ANDROID_KEY_PASSWORD`, it produces a signed release APK.
 
 ---
 

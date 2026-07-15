@@ -1,6 +1,5 @@
 package com.anyfile.x
 
-import android.content.ComponentName
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
@@ -62,22 +61,18 @@ class LauncherActivity : AppCompatActivity() {
      * This provides a better experience than a simple ACTION_GET_CONTENT.
      */
     private fun openSystemFileManager() {
-        val intents = mutableListOf<Intent>()
-        val packages = arrayOf("com.google.android.documentsui", "com.android.documentsui")
-        
-        for (pkg in packages) {
-            intents.add(Intent().apply {
-                component = ComponentName(pkg, "com.android.documentsui.files.FilesActivity")
-            })
-            intents.add(Intent().apply {
-                component = ComponentName(pkg, "com.android.documentsui.LauncherActivity")
-            })
-        }
-
-        // Broad fallback for external storage browse
-        intents.add(Intent("android.provider.action.BROWSE_DOCUMENT_ROOT").apply {
-            data = Uri.parse("content://com.android.externalstorage.documents/root/primary")
-        })
+        val root = Uri.parse("content://com.android.externalstorage.documents/root/primary")
+        val intents = listOf(
+            Intent("android.provider.action.BROWSE_DOCUMENT_ROOT").apply { data = root },
+            Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(root, "vnd.android.document/root")
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            },
+            Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                addCategory(Intent.CATEGORY_OPENABLE)
+                type = "*/*"
+            }
+        )
 
         var started = false
         for (intent in intents) {
@@ -86,7 +81,9 @@ class LauncherActivity : AppCompatActivity() {
                 startActivity(intent)
                 started = true
                 break
-            } catch (e: Exception) {}
+            } catch (_: Exception) {
+                // Try the next public intent variant.
+            }
         }
 
         if (!started) {

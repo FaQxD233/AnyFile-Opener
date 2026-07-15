@@ -6,6 +6,7 @@ import android.net.Uri
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.*
@@ -16,6 +17,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.anyfile.x.data.PrefsManager
+import com.anyfile.x.data.DefaultAppRuleScope
+import com.anyfile.x.data.DefaultAppRuleStore
 import com.anyfile.x.ui.ThemePreference
 import kotlinx.coroutines.launch
 
@@ -29,7 +32,13 @@ fun SettingsScreen(
     var showThemeDialog by remember { mutableStateOf(false) }
     var showAboutDialog by remember { mutableStateOf(false) }
     var showHelpDialog by remember { mutableStateOf(false) }
+    var showClearRulesDialog by remember { mutableStateOf(false) }
     val context = LocalContext.current
+    val rulesFlow = remember(context) { DefaultAppRuleStore.observeRules(context) }
+    val defaultAppRules by rulesFlow.collectAsStateWithLifecycle(initialValue = emptyList())
+    var autoOpen by remember { mutableStateOf(prefsManager.autoOpen) }
+    var defaultMime by remember { mutableStateOf(prefsManager.defaultMime) }
+    val defaultMimeIsValid = remember(defaultMime) { isValidMime(defaultMime) }
 
     Scaffold(
         topBar = {
@@ -48,6 +57,45 @@ fun SettingsScreen(
                 .fillMaxSize()
                 .padding(padding)
         ) {
+            item {
+                SectionHeader("BEHAVIOR")
+            }
+
+            item {
+                ListItem(
+                    headlineContent = { Text("Auto-open high-confidence results") },
+                    supportingContent = { Text("Applies saved default-app rules before showing a chooser") },
+                    trailingContent = {
+                        Switch(
+                            checked = autoOpen,
+                            onCheckedChange = {
+                                autoOpen = it
+                                prefsManager.autoOpen = it
+                            }
+                        )
+                    }
+                )
+            }
+
+            item {
+                OutlinedTextField(
+                    value = defaultMime,
+                    onValueChange = {
+                        defaultMime = it
+                        if (isValidMime(it)) prefsManager.defaultMime = it.trim()
+                    },
+                    label = { Text("Unknown-file fallback MIME") },
+                    supportingText = {
+                        Text(if (defaultMimeIsValid) "Example: application/octet-stream" else "Enter type/subtype or */*")
+                    },
+                    isError = !defaultMimeIsValid,
+                    singleLine = true,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 8.dp)
+                )
+            }
+
             // APPEARANCE SECTION
             item {
                 SectionHeader("APPEARANCE")
@@ -67,6 +115,50 @@ fun SettingsScreen(
                     },
                     modifier = Modifier.clickable { showThemeDialog = true }
                 )
+            }
+
+            item {
+                SectionHeader("DEFAULT APPS")
+            }
+
+            if (defaultAppRules.isEmpty()) {
+                item {
+                    Text(
+                        "No rules yet. Open a file with ‘Open As…’, then choose a MIME or extension default.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+                    )
+                }
+            } else {
+                items(
+                    items = defaultAppRules,
+                    key = { "${it.scope.name}:${it.key}" }
+                ) { rule ->
+                    val appLabel = DefaultAppRuleStore.appLabel(context, rule.packageName)
+                    val ruleLabel = if (rule.scope == DefaultAppRuleScope.EXTENSION) {
+                        ".${rule.key}"
+                    } else {
+                        rule.key
+                    }
+                    ListItem(
+                        headlineContent = { Text(ruleLabel) },
+                        supportingContent = { Text("${rule.scope.displayName} → $appLabel") },
+                        trailingContent = {
+                            IconButton(onClick = { DefaultAppRuleStore.removeRule(context, rule) }) {
+                                Icon(Icons.Default.Delete, contentDescription = "Delete default-app rule")
+                            }
+                        }
+                    )
+                }
+                item {
+                    TextButton(
+                        onClick = { showClearRulesDialog = true },
+                        modifier = Modifier.padding(horizontal = 8.dp)
+                    ) {
+                        Text("Clear all default-app rules")
+                    }
+                }
             }
 
             // ABOUT SECTION
@@ -131,6 +223,23 @@ fun SettingsScreen(
         )
     }
 
+    if (showClearRulesDialog) {
+        AlertDialog(
+            onDismissRequest = { showClearRulesDialog = false },
+            title = { Text("Clear default apps?") },
+            text = { Text("Files will use the system chooser again until you create new rules.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    DefaultAppRuleStore.clear(context)
+                    showClearRulesDialog = false
+                }) { Text("Clear") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showClearRulesDialog = false }) { Text("Cancel") }
+            }
+        )
+    }
+
     if (showHelpDialog) {
         AlertDialog(
             onDismissRequest = { showHelpDialog = false },
@@ -143,6 +252,7 @@ fun SettingsScreen(
                         "3. Open: Use 'Open Normally' or 'Open as...' to pick a category.\n\n" +
                         "Pro Tips:\n" +
                         "• Advanced: Type custom MIMEs like 'text/xml' if the auto-detect isn't specific enough.\n" +
+                        "• Defaults: In 'Open As...', assign an app to the detected MIME or file extension.\n" +
                         "• Inspect: Use 'INSPECT BINARY' to see if a file is corrupted or to read hidden text headers.")
             },
             confirmButton = {
@@ -163,6 +273,12 @@ fun SettingsScreen(
             }
         )
     }
+}
+
+private fun isValidMime(value: String): Boolean {
+    val normalized = value.trim()
+    if (normalized == "*/*") return true
+    return Regex("^[A-Za-z0-9!#&^_.+-]+/[A-Za-z0-9!#&^_.+*-]+\\z").matches(normalized)
 }
 
 @Composable

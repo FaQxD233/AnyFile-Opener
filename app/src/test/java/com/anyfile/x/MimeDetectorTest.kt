@@ -1,6 +1,8 @@
 package com.anyfile.x
 
+import com.anyfile.x.engine.MimeDetector
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class MimeDetectorTest {
@@ -40,7 +42,10 @@ class MimeDetectorTest {
         // JPEG
         assertMime(byteArrayOf(0xFF.toByte(), 0xD8.toByte(), 0xFF.toByte()), "image/jpeg")
         // PNG
-        assertMime(byteArrayOf(0x89.toByte(), 0x50, 0x4E, 0x47), "image/png")
+        assertMime(
+            byteArrayOf(0x89.toByte(), 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A),
+            "image/png"
+        )
         // GIF
         assertMime("GIF8".toByteArray(), "image/gif")
         // WEBP
@@ -59,11 +64,17 @@ class MimeDetectorTest {
     @Test
     fun testDocumentAndArchiveFormats() {
         // PDF
-        assertMime("%PDF".toByteArray(), "application/pdf")
+        assertMime("%PDF-1.7".toByteArray(), "application/pdf")
         // RAR
-        assertMime("Rar!".toByteArray(), "application/x-rar-compressed")
+        assertMime(
+            byteArrayOf(0x52, 0x61, 0x72, 0x21, 0x1A, 0x07),
+            "application/vnd.rar"
+        )
         // 7Z
-        assertMime(byteArrayOf(0x37, 0x7A, 0xBC.toByte(), 0xAF.toByte()), "application/x-7z-compressed")
+        assertMime(
+            byteArrayOf(0x37, 0x7A, 0xBC.toByte(), 0xAF.toByte(), 0x27, 0x1C),
+            "application/x-7z-compressed"
+        )
         // GZIP
         assertMime(byteArrayOf(0x1F.toByte(), 0x8B.toByte()), "application/gzip")
         // XZ
@@ -85,7 +96,10 @@ class MimeDetectorTest {
         val epub = ByteArray(40)
         zipMagic.copyInto(epub)
         "mimetype".toByteArray().copyInto(epub, 30)
-        assertMime(epub, "application/epub+zip")
+        assertEquals(
+            "application/epub+zip",
+            MimeDetector.detectFromHeader(epub, "book.epub").mime
+        )
         
         // DOCX ([Content_Types].xml)
         val docx = ByteArray(50)
@@ -93,6 +107,18 @@ class MimeDetectorTest {
         "[Content_Types].xml".toByteArray().copyInto(docx, 30)
         assertEquals("application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             MimeDetector.detectFromHeader(docx, "doc.docx").mime)
+    }
+
+    @Test
+    fun testDetectionExplanationAndConfidence() {
+        val magic = MimeDetector.detectFromHeader("%PDF-1.7".toByteArray(), "wrong.bin")
+        assertEquals(MimeDetector.DetectionConfidence.HIGH, magic.confidence)
+        assertEquals(MimeDetector.DetectionSource.MAGIC_BYTES, magic.source)
+        assertTrue(magic.evidence.contains("%PDF-"))
+
+        val extension = MimeDetector.detectFromHeader(ByteArray(0), "notes.md")
+        assertEquals(MimeDetector.DetectionConfidence.LOW, extension.confidence)
+        assertEquals(MimeDetector.DetectionSource.FILE_EXTENSION, extension.source)
     }
 
     private fun assertMime(header: ByteArray, expectedMime: String) {

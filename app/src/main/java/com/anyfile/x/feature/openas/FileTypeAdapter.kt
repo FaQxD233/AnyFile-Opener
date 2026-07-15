@@ -31,7 +31,7 @@ class FileTypeAdapter(
         holder.binding.root.setOnClickListener {
             val prev = selectedIndex
             selectedIndex = position
-            notifyItemChanged(prev)
+            if (prev in types.indices) notifyItemChanged(prev)
             notifyItemChanged(selectedIndex)
             onTypeSelected(type)
         }

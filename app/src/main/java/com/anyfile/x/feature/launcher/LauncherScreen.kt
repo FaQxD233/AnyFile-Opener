@@ -29,6 +29,8 @@ import com.anyfile.x.data.RecentFile
 import com.anyfile.x.data.RecentFileStore
 import com.anyfile.x.engine.MimeDetector
 import com.anyfile.x.routing.IntentRouter
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.*
 
@@ -45,32 +47,61 @@ fun LauncherScreen(
     val context = LocalContext.current
     val detectionResult by viewModel.detectionResult.collectAsStateWithLifecycle()
     val isDetecting by viewModel.isDetecting.collectAsStateWithLifecycle()
-    val recentFiles by RecentFileStore.getRecentFiles(context).collectAsStateWithLifecycle(initialValue = emptyList())
+    val recentFilesFlow = remember(context) { RecentFileStore.getRecentFiles(context) }
+    val recentFiles by recentFilesFlow.collectAsStateWithLifecycle(initialValue = emptyList())
+    val scope = rememberCoroutineScope()
 
     var selectedUri by remember { mutableStateOf<Uri?>(null) }
     var fileName by remember { mutableStateOf("") }
     var manualMime by remember { mutableStateOf("") }
     var advancedExpanded by remember { mutableStateOf(false) }
+    var isPreparing by remember { mutableStateOf(false) }
+    var fileSelectionJob by remember { mutableStateOf<Job?>(null) }
 
     val filePicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
     ) { uri ->
         if (uri != null) {
-            try {
-                context.contentResolver.takePersistableUriPermission(
-                    uri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION
-                )
-            } catch (e: Exception) {}
+            fileSelectionJob?.cancel()
             selectedUri = uri
-            val name = viewModel.queryFileName(uri) ?: uri.lastPathSegment ?: "Unknown file"
-            fileName = name
-            viewModel.detectMime(uri, name)
+            fileName = uri.lastPathSegment ?: "Loading file…"
+            manualMime = ""
+            isPreparing = true
+            viewModel.resetDetection()
+            fileSelectionJob = scope.launch {
+                val name = viewModel.queryFileName(uri) ?: uri.lastPathSegment ?: "Unknown file"
+                if (selectedUri != uri) return@launch
+                fileName = name
+                viewModel.detectMime(
+                    uri = uri,
+                    fileName = name,
+                    fallbackMime = prefsManager.defaultMime,
+                    triggerAutoOpen = prefsManager.autoOpen
+                )
+                isPreparing = false
+            }
         }
     }
 
     LaunchedEffect(detectionResult) {
         detectionResult?.let {
             manualMime = it.mime
+        }
+    }
+
+    LaunchedEffect(viewModel) {
+        viewModel.autoOpenEvent.collect { request ->
+            if (selectedUri == request.uri) {
+                val openResult = IntentRouter.open(
+                    context,
+                    request.uri,
+                    request.result.mime,
+                    request.fileName
+                )
+                if (openResult == IntentRouter.OpenResult.STARTED) {
+                    viewModel.addToRecents(request.uri, request.fileName, request.result.mime)
+                }
+            }
         }
     }
 
@@ -108,11 +139,14 @@ fun LauncherScreen(
 
                 item {
                     ActionButtons(
+                        enabled = !isPreparing && !isDetecting && detectionResult != null,
                         onOpenNormal = {
                             val mime = manualMime.takeIf { it.isNotBlank() } ?: detectionResult?.mime ?: "application/octet-stream"
                             selectedUri?.let {
-                                viewModel.addToRecents(it, fileName, mime)
-                                IntentRouter.open(context, it, mime)
+                                val openResult = IntentRouter.open(context, it, mime, fileName)
+                                if (openResult == IntentRouter.OpenResult.STARTED) {
+                                    viewModel.addToRecents(it, fileName, mime)
+                                }
                             }
                         },
                         onOpenAs = { selectedUri?.let { onOpenAsClick(it) } },
@@ -160,15 +194,12 @@ fun LauncherScreen(
                         recent = recent,
                         onOpenFolder = { IntentRouter.openFolder(context, Uri.parse(recent.uri)) }
                     ) {
+                        fileSelectionJob?.cancel()
                         val uri = Uri.parse(recent.uri)
-                        try {
-                            context.contentResolver.takePersistableUriPermission(
-                                uri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION
-                            )
-                        } catch (e: Exception) {}
                         selectedUri = uri
                         fileName = recent.fileName
                         manualMime = recent.mimeType
+                        isPreparing = false
                         // Proactive caching logic applied here: skip detection if we have a cached mime
                         // But we still set it in ViewModel to sync state
                         viewModel.setDetectedMimeManual(recent.mimeType)
@@ -233,28 +264,42 @@ fun DetectionInfo(result: MimeDetector.DetectionResult?) {
         Text(result.fileType.emoji, fontSize = 24.sp)
         Spacer(Modifier.width(12.dp))
         Column {
-            Text("Detected Type", style = MaterialTheme.typography.labelMedium)
+            Text(
+                "${result.confidence.label} confidence • ${result.source.label}",
+                style = MaterialTheme.typography.labelMedium
+            )
             Text(result.mime, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold)
+            Text(
+                result.evidence,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
         }
     }
 }
 
 @Composable
-fun ActionButtons(onOpenNormal: () -> Unit, onOpenAs: () -> Unit, onInspect: () -> Unit, onOpenFolder: () -> Unit) {
+fun ActionButtons(
+    enabled: Boolean,
+    onOpenNormal: () -> Unit,
+    onOpenAs: () -> Unit,
+    onInspect: () -> Unit,
+    onOpenFolder: () -> Unit
+) {
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(onClick = onOpenNormal, modifier = Modifier.weight(1f)) {
+            Button(onClick = onOpenNormal, enabled = enabled, modifier = Modifier.weight(1f)) {
                 Text("Open Normally")
             }
-            FilledTonalButton(onClick = onOpenFolder) {
+            FilledTonalButton(onClick = onOpenFolder, enabled = enabled) {
                 Icon(Icons.Default.FolderOpen, contentDescription = "Open folder")
             }
         }
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedButton(onClick = onOpenAs, modifier = Modifier.weight(1f)) {
+            OutlinedButton(onClick = onOpenAs, enabled = enabled, modifier = Modifier.weight(1f)) {
                 Text("Open As...")
             }
-            OutlinedButton(onClick = onInspect, modifier = Modifier.weight(1f)) {
+            OutlinedButton(onClick = onInspect, enabled = enabled, modifier = Modifier.weight(1f)) {
                 Text("Inspect Binary")
             }
         }

@@ -31,6 +31,7 @@ local.properties
 *.iml
 *.hprof
 *.pro
+!app/proguard-rules.pro
 
 # Keystore files
 *.jks

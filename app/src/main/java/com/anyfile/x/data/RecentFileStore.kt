@@ -8,11 +8,33 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import android.content.Intent
+import android.net.Uri
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 
 val Context.recentFilesDataStore by preferencesDataStore(name = "recent_files")
 
 object RecentFileStore {
     private val RECENT_FILES_KEY = stringPreferencesKey("recent_files_list")
+    private val ioScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    fun addRecentFileAsync(context: Context, file: RecentFile) {
+        val appContext = context.applicationContext
+        ioScope.launch {
+            try {
+                appContext.contentResolver.takePersistableUriPermission(
+                    Uri.parse(file.uri),
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION
+                )
+            } catch (_: Exception) {
+                // Inbound shares and some providers offer temporary access only.
+            }
+            addRecentFile(appContext, file)
+        }
+    }
 
     fun getRecentFiles(context: Context): Flow<List<RecentFile>> {
         return context.recentFilesDataStore.data.map { preferences ->
@@ -26,6 +48,7 @@ object RecentFileStore {
     }
 
     suspend fun addRecentFile(context: Context, file: RecentFile) {
+        var evictedUris: List<String> = emptyList()
         context.recentFilesDataStore.edit { preferences ->
             val currentJson = preferences[RECENT_FILES_KEY] ?: "[]"
             val currentList = try {
@@ -40,7 +63,19 @@ object RecentFileStore {
 
             // Limit to 10
             val limitedList = currentList.take(10)
+            evictedUris = currentList.drop(10).map { it.uri }
             preferences[RECENT_FILES_KEY] = Json.encodeToString(limitedList)
+        }
+
+        evictedUris.forEach { uriString ->
+            try {
+                context.contentResolver.releasePersistableUriPermission(
+                    Uri.parse(uriString),
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION
+                )
+            } catch (_: Exception) {
+                // The URI may have come from a non-persistable provider.
+            }
         }
     }
 }
