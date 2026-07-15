@@ -98,8 +98,11 @@ class InspectBottomSheet : BottomSheetDialogFragment() {
                     binding.btnLoadMore.isEnabled = true
                 }
                 // Scroll to bottom after loading more
-                binding.hexScrollView.post { binding.hexScrollView.fullScroll(View.FOCUS_DOWN) }
-                binding.asciiScrollView.post { binding.asciiScrollView.fullScroll(View.FOCUS_DOWN) }
+                val currentBinding = _binding ?: return@launch
+                val hexScrollView = currentBinding.hexScrollView
+                val asciiScrollView = currentBinding.asciiScrollView
+                hexScrollView.post { hexScrollView.fullScroll(View.FOCUS_DOWN) }
+                asciiScrollView.post { asciiScrollView.fullScroll(View.FOCUS_DOWN) }
             }
         }
 

@@ -14,6 +14,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -29,8 +30,6 @@ import com.anyfile.x.data.RecentFile
 import com.anyfile.x.data.RecentFileStore
 import com.anyfile.x.engine.MimeDetector
 import com.anyfile.x.routing.IntentRouter
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.*
 
@@ -49,58 +48,78 @@ fun LauncherScreen(
     val isDetecting by viewModel.isDetecting.collectAsStateWithLifecycle()
     val recentFilesFlow = remember(context) { RecentFileStore.getRecentFiles(context) }
     val recentFiles by recentFilesFlow.collectAsStateWithLifecycle(initialValue = emptyList())
-    val scope = rememberCoroutineScope()
 
-    var selectedUri by remember { mutableStateOf<Uri?>(null) }
-    var fileName by remember { mutableStateOf("") }
-    var manualMime by remember { mutableStateOf("") }
-    var advancedExpanded by remember { mutableStateOf(false) }
-    var isPreparing by remember { mutableStateOf(false) }
-    var fileSelectionJob by remember { mutableStateOf<Job?>(null) }
+    var selectedUriString by rememberSaveable { mutableStateOf<String?>(null) }
+    var fileName by rememberSaveable { mutableStateOf("") }
+    var manualMime by rememberSaveable { mutableStateOf("") }
+    var advancedExpanded by rememberSaveable { mutableStateOf(false) }
+    var selectionVersion by rememberSaveable { mutableIntStateOf(0) }
+    var autoOpenPending by rememberSaveable { mutableStateOf(false) }
+    val selectedUri = remember(selectedUriString) { selectedUriString?.let(Uri::parse) }
+    val currentSelectedUri by rememberUpdatedState(selectedUri)
+    var isPreparing by remember(selectedUriString, selectionVersion) {
+        mutableStateOf(selectedUriString != null)
+    }
 
     val filePicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
     ) { uri ->
         if (uri != null) {
-            fileSelectionJob?.cancel()
-            selectedUri = uri
+            viewModel.resetDetection()
+            selectedUriString = uri.toString()
             fileName = uri.lastPathSegment ?: "Loading file…"
             manualMime = ""
-            isPreparing = true
-            viewModel.resetDetection()
-            fileSelectionJob = scope.launch {
-                val name = viewModel.queryFileName(uri) ?: uri.lastPathSegment ?: "Unknown file"
-                if (selectedUri != uri) return@launch
-                fileName = name
-                viewModel.detectMime(
-                    uri = uri,
-                    fileName = name,
-                    fallbackMime = prefsManager.defaultMime,
-                    triggerAutoOpen = prefsManager.autoOpen
-                )
+            autoOpenPending = prefsManager.autoOpen
+            selectionVersion++
+        }
+    }
+
+    LaunchedEffect(selectedUriString, selectionVersion) {
+        val uriString = selectedUriString ?: run {
+            isPreparing = false
+            return@LaunchedEffect
+        }
+        val version = selectionVersion
+        val uri = Uri.parse(uriString)
+        val triggerAutoOpen = autoOpenPending
+        autoOpenPending = false
+        isPreparing = true
+        try {
+            val resolvedName = viewModel.queryFileName(uri)
+                ?: uri.lastPathSegment
+                ?: "Unknown file"
+            if (selectedUriString != uriString || selectionVersion != version) {
+                return@LaunchedEffect
+            }
+            fileName = resolvedName
+            viewModel.detectMime(
+                uri = uri,
+                fileName = resolvedName,
+                fallbackMime = prefsManager.defaultMime,
+                triggerAutoOpen = triggerAutoOpen
+            )
+        } finally {
+            if (selectedUriString == uriString && selectionVersion == version) {
                 isPreparing = false
             }
         }
     }
 
     LaunchedEffect(detectionResult) {
-        detectionResult?.let {
+        detectionResult?.takeIf { manualMime.isBlank() }?.let {
             manualMime = it.mime
         }
     }
 
     LaunchedEffect(viewModel) {
         viewModel.autoOpenEvent.collect { request ->
-            if (selectedUri == request.uri) {
-                val openResult = IntentRouter.open(
+            if (currentSelectedUri == request.uri) {
+                IntentRouter.open(
                     context,
                     request.uri,
                     request.result.mime,
                     request.fileName
                 )
-                if (openResult == IntentRouter.OpenResult.STARTED) {
-                    viewModel.addToRecents(request.uri, request.fileName, request.result.mime)
-                }
             }
         }
     }
@@ -143,10 +162,7 @@ fun LauncherScreen(
                         onOpenNormal = {
                             val mime = manualMime.takeIf { it.isNotBlank() } ?: detectionResult?.mime ?: "application/octet-stream"
                             selectedUri?.let {
-                                val openResult = IntentRouter.open(context, it, mime, fileName)
-                                if (openResult == IntentRouter.OpenResult.STARTED) {
-                                    viewModel.addToRecents(it, fileName, mime)
-                                }
+                                IntentRouter.open(context, it, mime, fileName)
                             }
                         },
                         onOpenAs = { selectedUri?.let { onOpenAsClick(it) } },
@@ -194,15 +210,13 @@ fun LauncherScreen(
                         recent = recent,
                         onOpenFolder = { IntentRouter.openFolder(context, Uri.parse(recent.uri)) }
                     ) {
-                        fileSelectionJob?.cancel()
                         val uri = Uri.parse(recent.uri)
-                        selectedUri = uri
+                        viewModel.resetDetection()
+                        selectedUriString = uri.toString()
                         fileName = recent.fileName
-                        manualMime = recent.mimeType
-                        isPreparing = false
-                        // Proactive caching logic applied here: skip detection if we have a cached mime
-                        // But we still set it in ViewModel to sync state
-                        viewModel.setDetectedMimeManual(recent.mimeType)
+                        manualMime = ""
+                        autoOpenPending = false
+                        selectionVersion++
                     }
                 }
             }

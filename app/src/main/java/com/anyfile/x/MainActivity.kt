@@ -13,13 +13,18 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.fragment.app.Fragment
 import androidx.fragment.app.FragmentManager
+import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.anyfile.x.data.PrefsManager
 import com.anyfile.x.feature.openas.OpenAsBottomSheet
+import com.anyfile.x.routing.ChooserRequestStore
 import com.anyfile.x.ui.AnyFileOpenerTheme
 import com.anyfile.x.ui.ThemePreference
 import java.util.ArrayDeque
 import java.util.LinkedHashSet
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 /** Transparent entry point that processes VIEW/SEND files as a sequential queue. */
 class MainActivity : AppCompatActivity() {
@@ -29,6 +34,9 @@ class MainActivity : AppCompatActivity() {
     private var processedFiles = 0
     private var waitingForExternalReturn = false
     private var showNextWhenSheetIsRemoved = false
+    private var pendingChooserRequestId: String? = null
+    private var chooserResolutionJob: Job? = null
+    private var isPostResumed = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -47,7 +55,10 @@ class MainActivity : AppCompatActivity() {
             OpenAsBottomSheet.RESULT_REQUEST_KEY,
             this
         ) { _, result ->
-            handleSheetResult(result.getString(OpenAsBottomSheet.RESULT_OUTCOME))
+            handleSheetResult(
+                result.getString(OpenAsBottomSheet.RESULT_OUTCOME),
+                result.getString(OpenAsBottomSheet.RESULT_CHOOSER_REQUEST_ID)
+            )
         }
         supportFragmentManager.registerFragmentLifecycleCallbacks(
             object : FragmentManager.FragmentLifecycleCallbacks() {
@@ -73,15 +84,34 @@ class MainActivity : AppCompatActivity() {
                 STATE_WAITING_FOR_EXTERNAL_RETURN,
                 false
             )
+            showNextWhenSheetIsRemoved = savedInstanceState.getBoolean(
+                STATE_SHOW_NEXT_WHEN_SHEET_REMOVED,
+                false
+            )
+            pendingChooserRequestId = savedInstanceState.getString(
+                STATE_PENDING_CHOOSER_REQUEST_ID
+            )
         }
     }
 
     override fun onPostResume() {
         super.onPostResume()
+        isPostResumed = true
+        if (pendingChooserRequestId != null) {
+            scheduleChooserResolution()
+            return
+        }
         if (waitingForExternalReturn) {
             waitingForExternalReturn = false
         }
         showNextIfReady()
+    }
+
+    override fun onPause() {
+        isPostResumed = false
+        chooserResolutionJob?.cancel()
+        chooserResolutionJob = null
+        super.onPause()
     }
 
     override fun onNewIntent(intent: Intent?) {
@@ -100,10 +130,17 @@ class MainActivity : AppCompatActivity() {
         outState.putInt(STATE_TOTAL_FILES, totalFiles)
         outState.putInt(STATE_PROCESSED_FILES, processedFiles)
         outState.putBoolean(STATE_WAITING_FOR_EXTERNAL_RETURN, waitingForExternalReturn)
+        outState.putBoolean(
+            STATE_SHOW_NEXT_WHEN_SHEET_REMOVED,
+            showNextWhenSheetIsRemoved
+        )
+        outState.putString(STATE_PENDING_CHOOSER_REQUEST_ID, pendingChooserRequestId)
         super.onSaveInstanceState(outState)
     }
 
     private fun handleIntent(intent: Intent) {
+        ChooserRequestStore.clear(this, pendingChooserRequestId)
+        pendingChooserRequestId = null
         val extractedUris = extractUris(intent)
         val uris = extractedUris.take(MAX_QUEUE_SIZE)
         if (uris.isEmpty()) {
@@ -166,7 +203,7 @@ class MainActivity : AppCompatActivity() {
             intent.getParcelableArrayListExtra<Uri>(Intent.EXTRA_STREAM).orEmpty()
         }
 
-    private fun handleSheetResult(outcome: String?) {
+    private fun handleSheetResult(outcome: String?, chooserRequestId: String?) {
         when (outcome) {
             OpenAsBottomSheet.OUTCOME_OPENED -> {
                 advanceQueue()
@@ -175,6 +212,16 @@ class MainActivity : AppCompatActivity() {
                 } else {
                     waitingForExternalReturn = true
                 }
+            }
+
+            OpenAsBottomSheet.OUTCOME_CHOOSER_LAUNCHED -> {
+                if (chooserRequestId.isNullOrBlank()) {
+                    showNextWhenSheetIsRemoved = true
+                    return
+                }
+                pendingChooserRequestId = chooserRequestId
+                waitingForExternalReturn = false
+                if (isPostResumed) scheduleChooserResolution()
             }
 
             OpenAsBottomSheet.OUTCOME_SKIPPED -> {
@@ -187,6 +234,8 @@ class MainActivity : AppCompatActivity() {
             }
 
             OpenAsBottomSheet.OUTCOME_CANCELLED -> {
+                ChooserRequestStore.clear(this, pendingChooserRequestId)
+                pendingChooserRequestId = null
                 pendingUris.clear()
                 finish()
             }
@@ -201,7 +250,9 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun showNextIfReady() {
-        if (isFinishing || waitingForExternalReturn || supportFragmentManager.isStateSaved) return
+        if (isFinishing || waitingForExternalReturn || pendingChooserRequestId != null ||
+            supportFragmentManager.isStateSaved
+        ) return
         if (supportFragmentManager.findFragmentByTag(OPEN_AS_TAG) != null) return
 
         val uri = pendingUris.peekFirst() ?: return
@@ -213,9 +264,45 @@ class MainActivity : AppCompatActivity() {
         ).show(supportFragmentManager, OPEN_AS_TAG)
     }
 
+    private fun scheduleChooserResolution() {
+        val requestId = pendingChooserRequestId ?: return
+        chooserResolutionJob?.cancel()
+        chooserResolutionJob = lifecycleScope.launch {
+            delay(300)
+            if (!isPostResumed || isFinishing || pendingChooserRequestId != requestId) {
+                return@launch
+            }
+
+            val wasChosen = ChooserRequestStore.consumeWasChosen(this@MainActivity, requestId)
+            pendingChooserRequestId = null
+            if (wasChosen) {
+                advanceQueue()
+                if (pendingUris.isEmpty()) {
+                    finish()
+                    return@launch
+                }
+            }
+
+            if (supportFragmentManager.findFragmentByTag(OPEN_AS_TAG) != null) {
+                showNextWhenSheetIsRemoved = true
+            } else {
+                showNextIfReady()
+            }
+        }
+    }
+
     private fun startLauncher() {
         startActivity(Intent(this, LauncherActivity::class.java))
         finish()
+    }
+
+    override fun onDestroy() {
+        chooserResolutionJob?.cancel()
+        if (isFinishing) {
+            ChooserRequestStore.clear(this, pendingChooserRequestId)
+            pendingChooserRequestId = null
+        }
+        super.onDestroy()
     }
 
     private companion object {
@@ -224,6 +311,8 @@ class MainActivity : AppCompatActivity() {
         const val STATE_TOTAL_FILES = "total_files"
         const val STATE_PROCESSED_FILES = "processed_files"
         const val STATE_WAITING_FOR_EXTERNAL_RETURN = "waiting_for_external_return"
+        const val STATE_SHOW_NEXT_WHEN_SHEET_REMOVED = "show_next_when_sheet_removed"
+        const val STATE_PENDING_CHOOSER_REQUEST_ID = "pending_chooser_request_id"
         const val MAX_QUEUE_SIZE = 50
     }
 }

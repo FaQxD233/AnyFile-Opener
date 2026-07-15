@@ -2,11 +2,8 @@ package com.anyfile.x.feature.launcher
 
 import android.app.Application
 import android.net.Uri
-import android.content.Intent
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
-import com.anyfile.x.data.RecentFile
-import com.anyfile.x.data.RecentFileStore
 import com.anyfile.x.engine.MimeDetector
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
@@ -112,49 +109,4 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         name
     }
 
-    fun addToRecents(uri: Uri, fileName: String, mime: String) {
-        viewModelScope.launch(Dispatchers.IO) {
-            try {
-                getApplication<Application>().contentResolver.takePersistableUriPermission(
-                    uri,
-                    Intent.FLAG_GRANT_READ_URI_PERMISSION
-                )
-            } catch (_: Exception) {
-                // Not every provider offers persistable grants; the current session can still open it.
-            }
-            RecentFileStore.addRecentFile(getApplication(), RecentFile(uri.toString(), fileName, mime))
-        }
-    }
-
-    /**
-     * Proactive caching: Manually set a known MIME result to avoid re-detection.
-     */
-    fun setDetectedMimeManual(mime: String) {
-        detectionJob?.cancel()
-        detectionJob = null
-        detectionGeneration++
-        _isDetecting.value = false
-        // Find the best FileType match for the cached MIME
-        val fileType = when {
-            mime == "application/vnd.android.package-archive" -> MimeDetector.FileType.APK
-            mime == "application/pdf" || mime.contains("document") || mime.contains("sheet") ||
-                mime.contains("presentation") || mime.contains("epub") -> MimeDetector.FileType.DOCUMENT
-            mime == "application/zip" || mime.contains("archive") || mime.contains("tar") ||
-                mime.contains("rar") || mime.contains("7z") || mime.contains("gzip") -> MimeDetector.FileType.ARCHIVE
-            mime.startsWith("video/") -> MimeDetector.FileType.VIDEO
-            mime.startsWith("audio/") -> MimeDetector.FileType.AUDIO
-            mime.startsWith("image/") -> MimeDetector.FileType.IMAGE
-            mime.startsWith("text/") || mime.contains("json") || mime.contains("xml") -> MimeDetector.FileType.TEXT
-            mime.startsWith("font/") -> MimeDetector.FileType.FONT
-            else -> MimeDetector.FileType.UNKNOWN
-        }
-               
-        _detectionResult.value = MimeDetector.DetectionResult(
-            fileType = fileType,
-            mime = mime.substringBefore(';').trim(),
-            confidence = MimeDetector.DetectionConfidence.LOW,
-            source = MimeDetector.DetectionSource.USER_OVERRIDE,
-            evidence = "MIME restored from recent-file history"
-        )
-    }
 }

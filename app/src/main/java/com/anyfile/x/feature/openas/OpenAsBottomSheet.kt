@@ -14,8 +14,6 @@ import androidx.recyclerview.widget.GridLayoutManager
 import com.anyfile.x.data.DefaultAppRuleScope
 import com.anyfile.x.data.DefaultAppRuleStore
 import com.anyfile.x.data.PrefsManager
-import com.anyfile.x.data.RecentFile
-import com.anyfile.x.data.RecentFileStore
 import com.anyfile.x.databinding.BottomSheetOpenAsBinding
 import com.anyfile.x.engine.MimeDetector
 import com.anyfile.x.routing.IntentRouter
@@ -31,12 +29,15 @@ class OpenAsBottomSheet : BottomSheetDialogFragment() {
     private val binding get() = _binding!!
     private lateinit var prefs: PrefsManager
     private var pendingOutcome: String? = null
+    private var pendingChooserRequestId: String? = null
     private var resultSent = false
 
     companion object {
         const val RESULT_REQUEST_KEY = "open_as_result"
         const val RESULT_OUTCOME = "outcome"
+        const val RESULT_CHOOSER_REQUEST_ID = "chooser_request_id"
         const val OUTCOME_OPENED = "opened"
+        const val OUTCOME_CHOOSER_LAUNCHED = "chooser_launched"
         const val OUTCOME_SKIPPED = "skipped"
         const val OUTCOME_CANCELLED = "cancelled"
 
@@ -124,11 +125,15 @@ class OpenAsBottomSheet : BottomSheetDialogFragment() {
                 } else {
                     MimeDetector.mimeOf(selectedType, prefs.defaultMime)
                 }
-                val result = IntentRouter.open(requireContext(), uri, mime, fileName)
-                if (result == IntentRouter.OpenResult.STARTED) {
-                    recordRecent(uri, fileName, mime)
-                    complete(OUTCOME_OPENED)
-                }
+                handleOpenResult(
+                    IntentRouter.open(
+                        requireContext(),
+                        uri,
+                        mime,
+                        fileName,
+                        trackChooserResult = isManagedQueue()
+                    )
+                )
             }
         }
     }
@@ -154,12 +159,10 @@ class OpenAsBottomSheet : BottomSheetDialogFragment() {
                 uri,
                 mime,
                 fileName,
-                DefaultAppRuleScope.MIME
+                DefaultAppRuleScope.MIME,
+                trackChooserResult = isManagedQueue()
             )
-            if (result == IntentRouter.OpenResult.STARTED) {
-                recordRecent(uri, fileName, mime)
-                complete(OUTCOME_OPENED)
-            }
+            handleOpenResult(result)
         }
 
         val extension = DefaultAppRuleStore.normalizeExtension(fileName)
@@ -172,12 +175,10 @@ class OpenAsBottomSheet : BottomSheetDialogFragment() {
                 uri,
                 mime,
                 fileName,
-                DefaultAppRuleScope.EXTENSION
+                DefaultAppRuleScope.EXTENSION,
+                trackChooserResult = isManagedQueue()
             )
-            if (result == IntentRouter.OpenResult.STARTED) {
-                recordRecent(uri, fileName, mime)
-                complete(OUTCOME_OPENED)
-            }
+            handleOpenResult(result)
         }
     }
 
@@ -204,10 +205,15 @@ class OpenAsBottomSheet : BottomSheetDialogFragment() {
                 text = "Open again with $appLabel"
                 chipIcon = appIcon
                 setOnClickListener {
-                    val result = IntentRouter.openWithPackage(context, uri, mime, lastPackage)
-                    if (result == IntentRouter.OpenResult.STARTED) {
-                        recordRecent(uri, fileName, mime)
-                        complete(OUTCOME_OPENED)
+                    val result = IntentRouter.openWithPackage(
+                        context,
+                        uri,
+                        mime,
+                        lastPackage,
+                        fileName
+                    )
+                    if (result.status == IntentRouter.OpenStatus.DIRECT_STARTED) {
+                        handleOpenResult(result)
                     } else {
                         visibility = View.GONE
                         val fallback = IntentRouter.open(
@@ -215,12 +221,10 @@ class OpenAsBottomSheet : BottomSheetDialogFragment() {
                             uri,
                             mime,
                             fileName,
-                            useDefaultRule = false
+                            useDefaultRule = false,
+                            trackChooserResult = isManagedQueue()
                         )
-                        if (fallback == IntentRouter.OpenResult.STARTED) {
-                            recordRecent(uri, fileName, mime)
-                            complete(OUTCOME_OPENED)
-                        }
+                        handleOpenResult(fallback)
                     }
                 }
             }
@@ -230,38 +234,60 @@ class OpenAsBottomSheet : BottomSheetDialogFragment() {
     }
 
     override fun onCancel(dialog: DialogInterface) {
-        pendingOutcome = OUTCOME_CANCELLED
+        if (pendingOutcome == null) pendingOutcome = OUTCOME_CANCELLED
         super.onCancel(dialog)
     }
 
     override fun onDismiss(dialog: DialogInterface) {
         super.onDismiss(dialog)
+        sendManagedResultIfNeeded()
+    }
+
+    private fun sendManagedResultIfNeeded() {
         val outcome = pendingOutcome ?: return
-        if (arguments?.getBoolean(ARG_MANAGED_QUEUE, false) != true) return
+        if (!isManagedQueue()) return
         if (resultSent) return
         resultSent = true
         parentFragmentManager.setFragmentResult(
             RESULT_REQUEST_KEY,
-            bundleOf(RESULT_OUTCOME to outcome)
-        )
-    }
-
-    private fun complete(outcome: String) {
-        if (pendingOutcome != null) return
-        pendingOutcome = outcome
-        dismiss()
-    }
-
-    private fun recordRecent(uri: Uri, fileName: String?, mime: String) {
-        RecentFileStore.addRecentFileAsync(
-            requireContext(),
-            RecentFile(
-                uri = uri.toString(),
-                fileName = fileName ?: uri.lastPathSegment ?: "Unknown file",
-                mimeType = mime.substringBefore(';').trim()
+            bundleOf(
+                RESULT_OUTCOME to outcome,
+                RESULT_CHOOSER_REQUEST_ID to pendingChooserRequestId
             )
         )
     }
+
+    private fun handleOpenResult(result: IntentRouter.OpenResult) {
+        when (result.status) {
+            IntentRouter.OpenStatus.DIRECT_STARTED -> complete(OUTCOME_OPENED)
+            IntentRouter.OpenStatus.CHOOSER_STARTED -> {
+                if (isManagedQueue()) {
+                    val requestId = result.chooserRequestId
+                    if (requestId == null) {
+                        Log.e("OpenAsBottomSheet", "Tracked chooser has no request ID")
+                    } else {
+                        complete(OUTCOME_CHOOSER_LAUNCHED, requestId)
+                    }
+                } else {
+                    complete(OUTCOME_OPENED)
+                }
+            }
+
+            IntentRouter.OpenStatus.NO_HANDLER,
+            IntentRouter.OpenStatus.FAILED -> Unit
+        }
+    }
+
+    private fun complete(outcome: String, chooserRequestId: String? = null) {
+        if (pendingOutcome != null) return
+        pendingOutcome = outcome
+        pendingChooserRequestId = chooserRequestId
+        sendManagedResultIfNeeded()
+        dismiss()
+    }
+
+    private fun isManagedQueue(): Boolean =
+        arguments?.getBoolean(ARG_MANAGED_QUEUE, false) == true
 
     override fun onDestroyView() {
         super.onDestroyView()

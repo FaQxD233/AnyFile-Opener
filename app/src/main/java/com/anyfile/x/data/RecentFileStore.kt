@@ -10,6 +10,7 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import android.content.Intent
 import android.net.Uri
+import android.util.Log
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -21,19 +22,19 @@ object RecentFileStore {
     private val RECENT_FILES_KEY = stringPreferencesKey("recent_files_list")
     private val ioScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
-    fun addRecentFileAsync(context: Context, file: RecentFile) {
+    fun addRecentFileAsync(context: Context, file: RecentFile): Boolean {
         val appContext = context.applicationContext
+        val uri = Uri.parse(file.uri)
+        if (!acquirePersistentReadPermission(appContext, uri)) return false
+
         ioScope.launch {
             try {
-                appContext.contentResolver.takePersistableUriPermission(
-                    Uri.parse(file.uri),
-                    Intent.FLAG_GRANT_READ_URI_PERMISSION
-                )
-            } catch (_: Exception) {
-                // Inbound shares and some providers offer temporary access only.
+                addRecentFile(appContext, file)
+            } catch (e: Exception) {
+                Log.e("RecentFileStore", "Could not save recent file ${file.uri}", e)
             }
-            addRecentFile(appContext, file)
         }
+        return true
     }
 
     fun getRecentFiles(context: Context): Flow<List<RecentFile>> {
@@ -47,7 +48,7 @@ object RecentFileStore {
         }
     }
 
-    suspend fun addRecentFile(context: Context, file: RecentFile) {
+    private suspend fun addRecentFile(context: Context, file: RecentFile) {
         var evictedUris: List<String> = emptyList()
         context.recentFilesDataStore.edit { preferences ->
             val currentJson = preferences[RECENT_FILES_KEY] ?: "[]"
@@ -76,6 +77,26 @@ object RecentFileStore {
             } catch (_: Exception) {
                 // The URI may have come from a non-persistable provider.
             }
+        }
+    }
+
+    private fun acquirePersistentReadPermission(context: Context, uri: Uri): Boolean {
+        if (uri.scheme != "content") return false
+        val resolver = context.contentResolver
+        return try {
+            val alreadyPersisted = resolver.persistedUriPermissions.any {
+                it.uri == uri && it.isReadPermission
+            }
+            if (!alreadyPersisted) {
+                resolver.takePersistableUriPermission(
+                    uri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION
+                )
+            }
+            true
+        } catch (_: Exception) {
+            // ACTION_SEND and many third-party providers offer temporary access only.
+            false
         }
     }
 }
