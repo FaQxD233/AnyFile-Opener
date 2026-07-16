@@ -84,8 +84,19 @@ class OpenAsBottomSheet : BottomSheetDialogFragment() {
         val queueTotal = arguments?.getInt(ARG_QUEUE_TOTAL, 1) ?: 1
         setupQueueControls(queuePosition, queueTotal)
 
+        var resolvedFileName: String? = uri.lastPathSegment
+        var detectedMime = prefs.defaultMime.ifBlank { "application/octet-stream" }
+
         binding.btnOpenFolder.setOnClickListener {
             IntentRouter.openFolder(requireContext(), uri)
+        }
+        binding.btnShare.setOnClickListener {
+            IntentRouter.share(
+                requireContext(),
+                uri,
+                detectedMime,
+                resolvedFileName
+            )
         }
 
         val resolver = requireContext().contentResolver
@@ -93,6 +104,7 @@ class OpenAsBottomSheet : BottomSheetDialogFragment() {
             val fileName = withContext(Dispatchers.IO) {
                 resolveFileName(resolver, uri) ?: uri.lastPathSegment
             }
+            resolvedFileName = fileName
             val detectedResult = withContext(Dispatchers.IO) {
                 MimeDetector.detect(
                     resolver,
@@ -101,6 +113,7 @@ class OpenAsBottomSheet : BottomSheetDialogFragment() {
                     prefs.defaultMime
                 )
             }
+            detectedMime = detectedResult.mime
 
             binding.titleText.text = when {
                 fileName != null && fileName.length <= 44 -> fileName

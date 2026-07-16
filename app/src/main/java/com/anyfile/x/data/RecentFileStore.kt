@@ -1,20 +1,20 @@
 package com.anyfile.x.data
 
 import android.content.Context
-import androidx.datastore.preferences.core.edit
-import androidx.datastore.preferences.core.stringPreferencesKey
-import androidx.datastore.preferences.preferencesDataStore
-import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.map
-import kotlinx.serialization.encodeToString
-import kotlinx.serialization.json.Json
 import android.content.Intent
 import android.net.Uri
 import android.util.Log
+import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.stringPreferencesKey
+import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
 
 val Context.recentFilesDataStore by preferencesDataStore(name = "recent_files")
 
@@ -24,8 +24,10 @@ object RecentFileStore {
 
     fun addRecentFileAsync(context: Context, file: RecentFile): Boolean {
         val appContext = context.applicationContext
-        val uri = Uri.parse(file.uri)
-        if (!acquirePersistentReadPermission(appContext, uri)) return false
+        // Persist permission when possible, but still keep a history entry for temporary URIs.
+        // Temporary grant may die with the source app, yet the list remains useful for
+        // SAF-selected files and same-session reopens.
+        acquirePersistentReadPermission(appContext, Uri.parse(file.uri))
 
         ioScope.launch {
             try {

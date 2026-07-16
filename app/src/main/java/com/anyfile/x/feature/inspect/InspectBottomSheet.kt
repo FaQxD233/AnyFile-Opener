@@ -53,11 +53,26 @@ class InspectBottomSheet : BottomSheetDialogFragment() {
         val uriString = arguments?.getString(ARG_URI) ?: return
         val uri = Uri.parse(uriString)
         val resolver = requireContext().applicationContext.contentResolver
+        var resolvedFileName: String? = null
+        var detectedMime = "application/octet-stream"
+
+        binding.btnOpenFolder.setOnClickListener {
+            IntentRouter.openFolder(requireContext(), uri)
+        }
+        binding.btnShare.setOnClickListener {
+            IntentRouter.share(
+                requireContext(),
+                uri,
+                detectedMime,
+                resolvedFileName
+            )
+        }
 
         viewLifecycleOwner.lifecycleScope.launch {
             // File name
             val fileName = withContext(Dispatchers.IO) { queryFileName(resolver, uri) }
-            binding.inspectFileName.text = fileName ?: uri.lastPathSegment ?: "Unknown"
+            resolvedFileName = fileName ?: uri.lastPathSegment
+            binding.inspectFileName.text = resolvedFileName ?: "Unknown"
 
             // File size
             val size = withContext(Dispatchers.IO) { queryFileSize(resolver, uri) }
@@ -70,11 +85,17 @@ class InspectBottomSheet : BottomSheetDialogFragment() {
 
             // Show MIME Detector's header-based detection result
             try {
-                val result = MimeDetector.detectFromHeader(fullByteArray, fileName ?: "", contentResolver = resolver, uri = uri)
+                val result = MimeDetector.detectFromHeader(
+                    fullByteArray,
+                    fileName ?: "",
+                    contentResolver = resolver,
+                    uri = uri
+                )
                 binding.headerDetectionLabel.visibility = View.VISIBLE
                 binding.headerDetectionLabel.text =
                     "${result.confidence.label} confidence • ${result.source.label}\n${result.evidence}"
                 binding.inspectMimeText.text = result.mime
+                detectedMime = result.mime
             } catch (e: Exception) {
                 binding.inspectMimeText.text = "detection failed"
             }
@@ -104,10 +125,6 @@ class InspectBottomSheet : BottomSheetDialogFragment() {
                 hexScrollView.post { hexScrollView.fullScroll(View.FOCUS_DOWN) }
                 asciiScrollView.post { asciiScrollView.fullScroll(View.FOCUS_DOWN) }
             }
-        }
-
-        binding.btnOpenFolder.setOnClickListener {
-            IntentRouter.openFolder(requireContext(), uri)
         }
     }
 

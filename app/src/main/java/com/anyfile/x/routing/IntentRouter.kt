@@ -5,6 +5,7 @@ import android.app.PendingIntent
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.ComponentName
+import android.content.ContentUris
 import android.content.Context
 import android.content.ContextWrapper
 import android.content.Intent
@@ -12,6 +13,7 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.provider.DocumentsContract
+import android.provider.MediaStore
 import android.util.Log
 import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
@@ -19,6 +21,7 @@ import com.anyfile.x.data.DefaultAppRuleScope
 import com.anyfile.x.data.DefaultAppRuleStore
 import com.anyfile.x.data.RecentFile
 import com.anyfile.x.data.RecentFileStore
+import java.io.File
 import java.util.Locale
 import java.util.UUID
 
@@ -47,6 +50,9 @@ object IntentRouter {
     private const val TAG = "IntentRouter"
     private const val PREFS_NAME = "mime_prefs"
     private const val ACTION_CHOOSER_RESULT = "com.anyfile.x.action.CHOOSER_RESULT"
+    private const val EXTERNAL_STORAGE_AUTHORITY = "com.android.externalstorage.documents"
+    private const val DOWNLOADS_DOCUMENTS_AUTHORITY = "com.android.providers.downloads.documents"
+    private const val MEDIA_DOCUMENTS_AUTHORITY = "com.android.providers.media.documents"
 
     /**
      * Opens a URI with a saved default rule when one exists, otherwise shows the
@@ -297,43 +303,379 @@ object IntentRouter {
     }
 
     /**
-     * Opens a containing directory only when the provider exposes path-like external
-     * storage document IDs. Other DocumentsProvider IDs are opaque and cannot be
-     * safely converted into a parent URI.
+     * Shares a file URI via ACTION_SEND while forwarding temporary read access.
+     */
+    fun share(
+        context: Context,
+        uri: Uri,
+        mimeType: String,
+        fileName: String? = null
+    ): Boolean {
+        val normalizedMime = normalizeIntentMime(mimeType)
+        return try {
+            val sendIntent = Intent(Intent.ACTION_SEND).apply {
+                type = normalizedMime
+                putExtra(Intent.EXTRA_STREAM, uri)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                clipData = ClipData.newRawUri(fileName, uri)
+                fileName?.let { putExtra(Intent.EXTRA_SUBJECT, it) }
+            }
+            val chooser = Intent.createChooser(sendIntent, "Share").apply {
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                clipData = ClipData.newRawUri(fileName, uri)
+            }
+            startActivity(context, chooser)
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to share $uri", e)
+            Toast.makeText(context, "Cannot share this file", Toast.LENGTH_SHORT).show()
+            false
+        }
+    }
+
+    /**
+     * Opens the containing folder using every recoverable path/document strategy.
+     * Falls back to the storage root when the exact parent cannot be exposed.
      */
     fun openFolder(context: Context, uri: Uri) {
         try {
-            if (DocumentsContract.isDocumentUri(context, uri) &&
-                uri.authority == "com.android.externalstorage.documents"
-            ) {
-                val documentId = DocumentsContract.getDocumentId(uri)
-                val volume = documentId.substringBefore(':', "")
-                val relativePath = documentId.substringAfter(':', "")
-                if (volume.isNotBlank()) {
-                    val parentPath = relativePath.substringBeforeLast('/', "")
-                    val parentId = "$volume:$parentPath"
-                    val parentUri = if (DocumentsContract.isTreeUri(uri)) {
-                        DocumentsContract.buildDocumentUriUsingTree(uri, parentId)
-                    } else {
-                        DocumentsContract.buildDocumentUri(uri.authority, parentId)
-                    }
-                    val intent = Intent(Intent.ACTION_VIEW).apply {
-                        setDataAndType(parentUri, DocumentsContract.Document.MIME_TYPE_DIR)
-                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                    }
-                    startActivity(context, intent)
-                    return
-                }
+            val parent = resolveParentDirectory(context, uri)
+            if (parent != null && launchParentDirectory(context, parent)) {
+                return
+            }
+
+            if (openSystemStorageRoot(context)) {
+                Toast.makeText(
+                    context,
+                    "Opened storage root; exact folder is unavailable for this source",
+                    Toast.LENGTH_LONG
+                ).show()
+                return
             }
 
             Toast.makeText(
                 context,
-                "This file provider does not expose its containing folder",
+                "Cannot open the containing folder for this file source",
                 Toast.LENGTH_SHORT
             ).show()
         } catch (e: Exception) {
-            Log.e(TAG, "Error opening folder", e)
+            Log.e(TAG, "Error opening folder for $uri", e)
             Toast.makeText(context, "Cannot open the containing folder", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private sealed class ParentDirectory {
+        data class AbsolutePath(val path: String) : ParentDirectory()
+        data class DocumentUri(val uri: Uri) : ParentDirectory()
+    }
+
+    private fun resolveParentDirectory(context: Context, uri: Uri): ParentDirectory? {
+        when (uri.scheme?.lowercase(Locale.ROOT)) {
+            "file" -> {
+                val path = uri.path?.takeIf { it.isNotBlank() } ?: return null
+                val parent = File(path).parent ?: return null
+                return ParentDirectory.AbsolutePath(parent)
+            }
+            "content" -> Unit
+            else -> return null
+        }
+
+        queryAbsolutePath(context, uri)?.let { absolute ->
+            File(absolute).parent?.let { return ParentDirectory.AbsolutePath(it) }
+        }
+
+        if (DocumentsContract.isDocumentUri(context, uri)) {
+            resolveDocumentParent(context, uri)?.let { return it }
+        }
+
+        resolveMediaStoreParent(context, uri)?.let { return it }
+
+        // FileProvider / custom providers sometimes embed a real path in the URI path.
+        extractEmbeddedAbsolutePath(uri)?.let { absolute ->
+            File(absolute).parent?.let { return ParentDirectory.AbsolutePath(it) }
+        }
+
+        return null
+    }
+
+    private fun extractEmbeddedAbsolutePath(uri: Uri): String? {
+        val candidates = buildList {
+            uri.path?.let { add(Uri.decode(it)) }
+            uri.lastPathSegment?.let { add(Uri.decode(it)) }
+            uri.pathSegments.forEach { add(Uri.decode(it)) }
+        }
+
+        for (raw in candidates) {
+            val cleaned = raw.removePrefix("raw:").removePrefix("file:")
+            val storageIndex = cleaned.indexOf("/storage/")
+            val sdcardIndex = cleaned.indexOf("/sdcard/")
+            val absolute = when {
+                cleaned.startsWith("/storage/") || cleaned.startsWith("/sdcard/") -> cleaned
+                storageIndex >= 0 -> cleaned.substring(storageIndex)
+                sdcardIndex >= 0 -> cleaned.substring(sdcardIndex)
+                cleaned.startsWith("storage/") -> "/$cleaned"
+                cleaned.startsWith("sdcard/") -> "/$cleaned"
+                else -> null
+            } ?: continue
+
+            val file = File(absolute)
+            if (file.exists() || absolute.startsWith("/storage/") || absolute.startsWith("/sdcard/")) {
+                return absolute
+            }
+        }
+        return null
+    }
+
+    private fun resolveDocumentParent(context: Context, uri: Uri): ParentDirectory? {
+        val documentId = runCatching { DocumentsContract.getDocumentId(uri) }.getOrNull()
+            ?: return null
+
+        // raw:/storage/emulated/0/Download/file.pdf
+        if (documentId.startsWith("raw:", ignoreCase = true)) {
+            val absolute = documentId.substringAfter(':')
+            File(absolute).parent?.let { return ParentDirectory.AbsolutePath(it) }
+        }
+
+        // Path-like document ids: primary:Download/a.pdf, home:Documents/a.pdf, UUID:DCIM/a.jpg
+        parsePathLikeDocumentId(documentId)?.let { (volume, parentRelative) ->
+            val parentId = "$volume:$parentRelative"
+            val parentUri = buildParentDocumentUri(uri, parentId)
+            return ParentDirectory.DocumentUri(parentUri)
+        }
+
+        // downloads provider: ms:<id> / msf:<id> / plain numeric ids
+        if (uri.authority == DOWNLOADS_DOCUMENTS_AUTHORITY) {
+            val mediaId = documentId.substringAfter(':', documentId)
+            if (mediaId.all { it.isDigit() }) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    queryAbsolutePath(
+                        context,
+                        ContentUris.withAppendedId(
+                            MediaStore.Downloads.EXTERNAL_CONTENT_URI,
+                            mediaId.toLong()
+                        )
+                    )?.let { absolute ->
+                        File(absolute).parent?.let { return ParentDirectory.AbsolutePath(it) }
+                    }
+                }
+                queryAbsolutePath(
+                    context,
+                    ContentUris.withAppendedId(
+                        MediaStore.Files.getContentUri("external"),
+                        mediaId.toLong()
+                    )
+                )?.let { absolute ->
+                    File(absolute).parent?.let { return ParentDirectory.AbsolutePath(it) }
+                }
+            }
+        }
+
+        // media documents: image:123 / video:123 / audio:123 / document:123
+        if (uri.authority == MEDIA_DOCUMENTS_AUTHORITY && documentId.contains(':')) {
+            val type = documentId.substringBefore(':')
+            val id = documentId.substringAfter(':')
+            if (id.all { it.isDigit() }) {
+                val contentUri = when (type) {
+                    "image" -> MediaStore.Images.Media.EXTERNAL_CONTENT_URI
+                    "video" -> MediaStore.Video.Media.EXTERNAL_CONTENT_URI
+                    "audio" -> MediaStore.Audio.Media.EXTERNAL_CONTENT_URI
+                    else -> MediaStore.Files.getContentUri("external")
+                }
+                queryAbsolutePath(
+                    context,
+                    ContentUris.withAppendedId(contentUri, id.toLong())
+                )?.let { absolute ->
+                    File(absolute).parent?.let { return ParentDirectory.AbsolutePath(it) }
+                }
+            }
+        }
+
+        // Tree-backed document path (API 26+), when the provider exposes ancestors.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            runCatching {
+                DocumentsContract.findDocumentPath(context.contentResolver, uri)
+            }.getOrNull()?.path?.takeIf { it.size >= 2 }?.let { segments ->
+                val parentId = segments[segments.lastIndex - 1]
+                return ParentDirectory.DocumentUri(buildParentDocumentUri(uri, parentId))
+            }
+        }
+
+        return null
+    }
+
+    private fun resolveMediaStoreParent(context: Context, uri: Uri): ParentDirectory? {
+        queryAbsolutePath(context, uri)?.let { absolute ->
+            File(absolute).parent?.let { return ParentDirectory.AbsolutePath(it) }
+        }
+
+        // content://media/external/file/<id>, images/media/<id>, etc.
+        val last = uri.lastPathSegment ?: return null
+        if (!last.all { it.isDigit() }) return null
+        val id = last.toLong()
+        val candidates = buildList {
+            add(MediaStore.Files.getContentUri("external"))
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                add(MediaStore.Downloads.EXTERNAL_CONTENT_URI)
+            }
+            add(MediaStore.Images.Media.EXTERNAL_CONTENT_URI)
+            add(MediaStore.Video.Media.EXTERNAL_CONTENT_URI)
+            add(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI)
+        }
+        for (base in candidates) {
+            queryAbsolutePath(context, ContentUris.withAppendedId(base, id))?.let { absolute ->
+                File(absolute).parent?.let { return ParentDirectory.AbsolutePath(it) }
+            }
+        }
+        return null
+    }
+
+    private fun parsePathLikeDocumentId(documentId: String): Pair<String, String>? {
+        if (!documentId.contains(':')) return null
+        val volume = documentId.substringBefore(':')
+        val relative = documentId.substringAfter(':')
+        if (volume.isBlank()) return null
+        // Opaque numeric / ms-style ids are not filesystem relative paths.
+        if (relative.isBlank()) return volume to ""
+        if (relative.all { it.isDigit() }) return null
+        if (relative.startsWith("ms", ignoreCase = true) && relative.contains(':')) return null
+        val parentRelative = relative.substringBeforeLast('/', missingDelimiterValue = "")
+        return volume to parentRelative
+    }
+
+    private fun buildParentDocumentUri(sourceUri: Uri, parentId: String): Uri {
+        val authority = sourceUri.authority ?: EXTERNAL_STORAGE_AUTHORITY
+        return if (DocumentsContract.isTreeUri(sourceUri)) {
+            DocumentsContract.buildDocumentUriUsingTree(sourceUri, parentId)
+        } else {
+            DocumentsContract.buildDocumentUri(authority, parentId)
+        }
+    }
+
+    private fun launchParentDirectory(context: Context, parent: ParentDirectory): Boolean =
+        when (parent) {
+            is ParentDirectory.DocumentUri -> tryStartAny(context, directoryIntents(parent.uri))
+            is ParentDirectory.AbsolutePath -> launchAbsoluteDirectory(context, parent.path)
+        }
+
+    private fun launchAbsoluteDirectory(context: Context, path: String): Boolean {
+        val dir = File(path)
+        val normalized = try {
+            dir.canonicalFile
+        } catch (_: Exception) {
+            dir
+        }
+
+        absolutePathToDocumentUri(normalized.absolutePath)?.let { docUri ->
+            if (tryStartAny(context, directoryIntents(docUri))) return true
+        }
+
+        val fileUri = Uri.fromFile(normalized)
+        val fileIntents = listOf(
+            Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(fileUri, DocumentsContract.Document.MIME_TYPE_DIR)
+            },
+            Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(fileUri, "resource/folder")
+            },
+            Intent(Intent.ACTION_VIEW).apply {
+                data = fileUri
+            }
+        )
+        return tryStartAny(context, fileIntents)
+    }
+
+    private fun absolutePathToDocumentUri(absolutePath: String): Uri? {
+        val path = absolutePath.replace('\\', '/')
+        val primaryPrefix = "/storage/emulated/0"
+        if (path == primaryPrefix || path.startsWith("$primaryPrefix/")) {
+            val relative = path.removePrefix(primaryPrefix).trimStart('/')
+            val documentId = if (relative.isEmpty()) "primary:" else "primary:$relative"
+            return DocumentsContract.buildDocumentUri(EXTERNAL_STORAGE_AUTHORITY, documentId)
+        }
+
+        // /storage/<uuid>/... secondary volumes
+        val match = Regex("^/storage/([^/]+)(?:/(.*))?$").matchEntire(path) ?: return null
+        val volume = match.groupValues[1]
+        if (volume == "emulated") return null
+        val relative = match.groupValues[2]
+        val documentId = if (relative.isBlank()) "$volume:" else "$volume:$relative"
+        return DocumentsContract.buildDocumentUri(EXTERNAL_STORAGE_AUTHORITY, documentId)
+    }
+
+    private fun directoryIntents(dirUri: Uri): List<Intent> = listOf(
+        Intent(Intent.ACTION_VIEW).apply {
+            setDataAndType(dirUri, DocumentsContract.Document.MIME_TYPE_DIR)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            clipData = ClipData.newRawUri(null, dirUri)
+        },
+        Intent(Intent.ACTION_VIEW).apply {
+            setDataAndType(dirUri, "resource/folder")
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        },
+        Intent(Intent.ACTION_VIEW).apply {
+            data = dirUri
+            setPackage("com.google.android.documentsui")
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        },
+        Intent(Intent.ACTION_VIEW).apply {
+            data = dirUri
+            setPackage("com.android.documentsui")
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        },
+        Intent("android.provider.action.BROWSE_DOCUMENT_ROOT").apply {
+            data = dirUri
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+    )
+
+    private fun openSystemStorageRoot(context: Context): Boolean {
+        val root = Uri.parse("content://$EXTERNAL_STORAGE_AUTHORITY/root/primary")
+        val primaryDoc = DocumentsContract.buildDocumentUri(EXTERNAL_STORAGE_AUTHORITY, "primary:")
+        val intents = listOf(
+            Intent("android.provider.action.BROWSE_DOCUMENT_ROOT").apply { data = root },
+            Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(root, "vnd.android.document/root")
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            },
+            Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(primaryDoc, DocumentsContract.Document.MIME_TYPE_DIR)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            },
+            Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                addCategory(Intent.CATEGORY_OPENABLE)
+                type = "*/*"
+            }
+        )
+        return tryStartAny(context, intents)
+    }
+
+    private fun tryStartAny(context: Context, intents: List<Intent>): Boolean {
+        for (intent in intents) {
+            try {
+                startActivity(context, Intent(intent))
+                return true
+            } catch (_: Exception) {
+                // Try the next candidate.
+            }
+        }
+        return false
+    }
+
+    private fun queryAbsolutePath(context: Context, uri: Uri): String? {
+        val projection = arrayOf(MediaStore.MediaColumns.DATA)
+        return try {
+            context.contentResolver.query(uri, projection, null, null, null)?.use { cursor ->
+                if (!cursor.moveToFirst()) return@use null
+                val index = cursor.getColumnIndex(MediaStore.MediaColumns.DATA)
+                if (index < 0 || cursor.isNull(index)) return@use null
+                // Scoped storage may hide the file from our process; still keep path-like values
+                // so we can map them to DocumentsUI folder URIs.
+                cursor.getString(index)?.takeIf {
+                    it.startsWith("/storage/") || it.startsWith("/sdcard/") || File(it).exists()
+                }
+            }
+        } catch (_: Exception) {
+            null
         }
     }
 

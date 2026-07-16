@@ -165,6 +165,14 @@ fun LauncherScreen(
                                 IntentRouter.open(context, it, mime, fileName)
                             }
                         },
+                        onShare = {
+                            val mime = manualMime.takeIf { it.isNotBlank() }
+                                ?: detectionResult?.mime
+                                ?: "application/octet-stream"
+                            selectedUri?.let {
+                                IntentRouter.share(context, it, mime, fileName)
+                            }
+                        },
                         onOpenAs = { selectedUri?.let { onOpenAsClick(it) } },
                         onInspect = { selectedUri?.let { onInspectClick(it) } },
                         onOpenFolder = { selectedUri?.let { IntentRouter.openFolder(context, it) } }
@@ -296,6 +304,7 @@ fun DetectionInfo(result: MimeDetector.DetectionResult?) {
 fun ActionButtons(
     enabled: Boolean,
     onOpenNormal: () -> Unit,
+    onShare: () -> Unit,
     onOpenAs: () -> Unit,
     onInspect: () -> Unit,
     onOpenFolder: () -> Unit
@@ -304,6 +313,9 @@ fun ActionButtons(
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Button(onClick = onOpenNormal, enabled = enabled, modifier = Modifier.weight(1f)) {
                 Text("Open Normally")
+            }
+            FilledTonalButton(onClick = onShare, enabled = enabled) {
+                Icon(Icons.Default.Share, contentDescription = "Share")
             }
             FilledTonalButton(onClick = onOpenFolder, enabled = enabled) {
                 Icon(Icons.Default.FolderOpen, contentDescription = "Open folder")
