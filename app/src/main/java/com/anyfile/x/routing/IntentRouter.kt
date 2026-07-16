@@ -349,18 +349,30 @@ object IntentRouter {
     }
 
     /**
-     * Opens the containing folder using every recoverable path/document strategy.
-     * Falls back to the storage root when the exact parent cannot be exposed.
+     * Resolves the best containing-folder target and opens it through a system
+     * app chooser so the user can pick any installed file manager.
      */
     fun openFolder(context: Context, uri: Uri) {
         try {
             val parent = resolveParentDirectory(context, uri)
             Log.d(TAG, "openFolder source=$uri parent=$parent")
-            if (parent != null && launchParentDirectory(context, parent)) {
+
+            val folderIntents = when (parent) {
+                is ParentDirectory.StorageDocument ->
+                    storageDocumentDirectoryIntents(parent.documentId)
+                is ParentDirectory.DocumentUri ->
+                    genericDirectoryIntents(parent.uri)
+                is ParentDirectory.AbsolutePath ->
+                    absoluteDirectoryIntents(parent.path)
+                null -> emptyList()
+            }
+
+            if (folderIntents.isNotEmpty() && launchFileManagerChooser(context, folderIntents)) {
                 return
             }
 
-            if (openSystemStorageRoot(context)) {
+            // Exact parent unavailable: still offer a file-manager chooser at storage root.
+            if (launchFileManagerChooser(context, storageRootIntents())) {
                 Toast.makeText(
                     context,
                     "Opened storage root; exact folder is unavailable for this source",
@@ -371,7 +383,7 @@ object IntentRouter {
 
             Toast.makeText(
                 context,
-                "Cannot open the containing folder for this file source",
+                "No file manager found to open the folder",
                 Toast.LENGTH_SHORT
             ).show()
         } catch (e: Exception) {
@@ -628,28 +640,17 @@ object IntentRouter {
         }
     }
 
-    private fun launchParentDirectory(context: Context, parent: ParentDirectory): Boolean =
-        when (parent) {
-            is ParentDirectory.StorageDocument ->
-                tryStartAny(context, storageDocumentDirectoryIntents(parent.documentId))
-            is ParentDirectory.DocumentUri ->
-                tryStartAny(context, genericDirectoryIntents(parent.uri))
-            is ParentDirectory.AbsolutePath ->
-                launchAbsoluteDirectory(context, parent.path)
-        }
-
-    private fun launchAbsoluteDirectory(context: Context, path: String): Boolean {
+    private fun absoluteDirectoryIntents(path: String): List<Intent> {
         val dir = File(path)
         val normalized = try {
             dir.canonicalFile
         } catch (_: Exception) {
             dir
         }
-
         absolutePathToDocumentId(normalized.absolutePath)?.let { documentId ->
-            if (tryStartAny(context, storageDocumentDirectoryIntents(documentId))) return true
+            return storageDocumentDirectoryIntents(documentId)
         }
-        return false
+        return emptyList()
     }
 
     private fun absolutePathToParent(path: String): ParentDirectory {
@@ -680,11 +681,8 @@ object IntentRouter {
     }
 
     /**
-     * Launch folder intents with DocumentsUI first.
-     * Generic ACTION_VIEW is last because third-party managers (e.g. ES) often claim
-     * document URIs and open them as mysterious files instead of folders.
-     *
-     * Do NOT set FLAG_GRANT_READ_URI_PERMISSION — we do not own these URIs.
+     * Build public intents that file managers can handle.
+     * No setPackage / no URI grants — the system chooser decides the target app.
      */
     private fun storageDocumentDirectoryIntents(documentId: String): List<Intent> {
         val safeId = sanitizeExistingDocumentId(documentId)
@@ -695,124 +693,171 @@ object IntentRouter {
         val treeDocUri =
             DocumentsContract.buildDocumentUriUsingTree(treeUri, safeId)
         val rootUri = Uri.parse("content://$EXTERNAL_STORAGE_AUTHORITY/root/primary")
+        val isRoot = safeId == "primary:" || safeId == "primary"
 
-        val intents = mutableListOf<Intent>()
-
-        // 1) System Files / DocumentsUI first (both package names).
-        for (pkg in DOCUMENTS_UI_PACKAGES) {
-            intents += Intent(Intent.ACTION_VIEW).apply {
-                setDataAndType(documentUri, DocumentsContract.Document.MIME_TYPE_DIR)
-                setPackage(pkg)
-            }
-            intents += Intent(Intent.ACTION_VIEW).apply {
-                setDataAndType(treeDocUri, DocumentsContract.Document.MIME_TYPE_DIR)
-                setPackage(pkg)
-            }
-            intents += Intent(Intent.ACTION_VIEW).apply {
-                setDataAndType(treeUri, DocumentsContract.Document.MIME_TYPE_DIR)
-                setPackage(pkg)
-            }
-            intents += Intent("android.provider.action.BROWSE").apply {
-                setDataAndType(documentUri, DocumentsContract.Document.MIME_TYPE_DIR)
-                setPackage(pkg)
-            }
-            intents += Intent("android.provider.action.BROWSE_DOCUMENT_ROOT").apply {
-                data = if (safeId == "primary:" || safeId == "primary") rootUri else treeUri
-                setPackage(pkg)
-            }
-        }
-
-        // 2) Explicit directory MIME without package (may still hit a good handler).
-        intents += Intent(Intent.ACTION_VIEW).apply {
-            setDataAndType(documentUri, DocumentsContract.Document.MIME_TYPE_DIR)
-            addCategory(Intent.CATEGORY_DEFAULT)
-        }
-        intents += Intent(Intent.ACTION_VIEW).apply {
-            setDataAndType(treeDocUri, DocumentsContract.Document.MIME_TYPE_DIR)
-            addCategory(Intent.CATEGORY_DEFAULT)
-        }
-        intents += Intent("android.provider.action.BROWSE").apply {
-            setDataAndType(documentUri, DocumentsContract.Document.MIME_TYPE_DIR)
-        }
-        intents += Intent("android.provider.action.BROWSE_DOCUMENT_ROOT").apply {
-            data = if (safeId == "primary:" || safeId == "primary") rootUri else treeUri
-        }
-
-        // 3) Initial-uri document pickers as last useful fallback (lands near the folder).
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            intents += Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
-                addCategory(Intent.CATEGORY_OPENABLE)
-                type = "*/*"
-                putExtra(DocumentsContract.EXTRA_INITIAL_URI, documentUri)
-            }
-            intents += Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
-                putExtra(DocumentsContract.EXTRA_INITIAL_URI, documentUri)
+        return buildList {
+            // Primary: directory VIEW — what most file managers advertise.
+            add(
+                Intent(Intent.ACTION_VIEW).apply {
+                    setDataAndType(documentUri, DocumentsContract.Document.MIME_TYPE_DIR)
+                    addCategory(Intent.CATEGORY_DEFAULT)
+                }
+            )
+            add(
+                Intent(Intent.ACTION_VIEW).apply {
+                    setDataAndType(treeDocUri, DocumentsContract.Document.MIME_TYPE_DIR)
+                    addCategory(Intent.CATEGORY_DEFAULT)
+                }
+            )
+            add(
+                Intent(Intent.ACTION_VIEW).apply {
+                    setDataAndType(documentUri, "resource/folder")
+                    addCategory(Intent.CATEGORY_DEFAULT)
+                }
+            )
+            add(
+                Intent(Intent.ACTION_VIEW).apply {
+                    setDataAndType(treeUri, DocumentsContract.Document.MIME_TYPE_DIR)
+                    addCategory(Intent.CATEGORY_DEFAULT)
+                }
+            )
+            add(
+                Intent("android.provider.action.BROWSE").apply {
+                    setDataAndType(documentUri, DocumentsContract.Document.MIME_TYPE_DIR)
+                    addCategory(Intent.CATEGORY_DEFAULT)
+                }
+            )
+            add(
+                Intent("android.provider.action.BROWSE_DOCUMENT_ROOT").apply {
+                    data = if (isRoot) rootUri else treeUri
+                    addCategory(Intent.CATEGORY_DEFAULT)
+                }
+            )
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                add(
+                    Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
+                        putExtra(DocumentsContract.EXTRA_INITIAL_URI, documentUri)
+                    }
+                )
             }
         }
-
-        return intents
     }
 
-    private fun genericDirectoryIntents(dirUri: Uri): List<Intent> {
-        val intents = mutableListOf<Intent>()
-        for (pkg in DOCUMENTS_UI_PACKAGES) {
-            intents += Intent(Intent.ACTION_VIEW).apply {
+    private fun genericDirectoryIntents(dirUri: Uri): List<Intent> = buildList {
+        add(
+            Intent(Intent.ACTION_VIEW).apply {
                 setDataAndType(dirUri, DocumentsContract.Document.MIME_TYPE_DIR)
-                setPackage(pkg)
+                addCategory(Intent.CATEGORY_DEFAULT)
             }
-            intents += Intent("android.provider.action.BROWSE").apply {
+        )
+        add(
+            Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(dirUri, "resource/folder")
+                addCategory(Intent.CATEGORY_DEFAULT)
+            }
+        )
+        add(
+            Intent("android.provider.action.BROWSE").apply {
                 setDataAndType(dirUri, DocumentsContract.Document.MIME_TYPE_DIR)
-                setPackage(pkg)
+                addCategory(Intent.CATEGORY_DEFAULT)
             }
-        }
-        intents += Intent(Intent.ACTION_VIEW).apply {
-            setDataAndType(dirUri, DocumentsContract.Document.MIME_TYPE_DIR)
-            addCategory(Intent.CATEGORY_DEFAULT)
-        }
-        intents += Intent("android.provider.action.BROWSE").apply {
-            setDataAndType(dirUri, DocumentsContract.Document.MIME_TYPE_DIR)
-        }
-        return intents
+        )
     }
 
-    private fun openSystemStorageRoot(context: Context): Boolean {
+    private fun storageRootIntents(): List<Intent> {
         val root = Uri.parse("content://$EXTERNAL_STORAGE_AUTHORITY/root/primary")
         val primaryDoc = DocumentsContract.buildDocumentUri(EXTERNAL_STORAGE_AUTHORITY, "primary:")
-        val intents = mutableListOf<Intent>()
-        for (pkg in DOCUMENTS_UI_PACKAGES) {
-            intents += Intent("android.provider.action.BROWSE_DOCUMENT_ROOT").apply {
-                data = root
-                setPackage(pkg)
-            }
-            intents += Intent(Intent.ACTION_VIEW).apply {
-                setDataAndType(primaryDoc, DocumentsContract.Document.MIME_TYPE_DIR)
-                setPackage(pkg)
-            }
+        return buildList {
+            add(
+                Intent(Intent.ACTION_VIEW).apply {
+                    setDataAndType(primaryDoc, DocumentsContract.Document.MIME_TYPE_DIR)
+                    addCategory(Intent.CATEGORY_DEFAULT)
+                }
+            )
+            add(
+                Intent("android.provider.action.BROWSE_DOCUMENT_ROOT").apply {
+                    data = root
+                    addCategory(Intent.CATEGORY_DEFAULT)
+                }
+            )
+            add(
+                Intent(Intent.ACTION_VIEW).apply {
+                    setDataAndType(root, "vnd.android.document/root")
+                    addCategory(Intent.CATEGORY_DEFAULT)
+                }
+            )
+            add(
+                Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                    addCategory(Intent.CATEGORY_OPENABLE)
+                    type = "*/*"
+                }
+            )
         }
-        intents += Intent("android.provider.action.BROWSE_DOCUMENT_ROOT").apply { data = root }
-        intents += Intent(Intent.ACTION_VIEW).apply {
-            setDataAndType(primaryDoc, DocumentsContract.Document.MIME_TYPE_DIR)
-        }
-        intents += Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
-            addCategory(Intent.CATEGORY_OPENABLE)
-            type = "*/*"
-        }
-        return tryStartAny(context, intents)
     }
 
-    private fun tryStartAny(context: Context, intents: List<Intent>): Boolean {
-        for (intent in intents) {
-            try {
-                // Do not pre-filter with resolveActivity: package visibility can hide
-                // DocumentsUI handlers even when startActivity would succeed.
-                startActivity(context, Intent(intent))
-                Log.d(TAG, "Started folder intent: $intent")
-                return true
+    /**
+     * Shows a system chooser populated with every activity that can handle any of
+     * the candidate folder intents. The first intent is the primary target; the rest
+     * are attached via EXTRA_INITIAL_INTENTS so more file managers appear.
+     */
+    private fun launchFileManagerChooser(context: Context, candidates: List<Intent>): Boolean {
+        if (candidates.isEmpty()) return false
+
+        val pm = context.packageManager
+        val uniqueTargets = LinkedHashMap<ComponentName, Intent>()
+
+        for (candidate in candidates) {
+            val matches = try {
+                pm.queryIntentActivities(candidate, PackageManager.MATCH_DEFAULT_ONLY)
             } catch (e: Exception) {
-                Log.d(TAG, "Folder intent failed: $intent (${e.javaClass.simpleName}: ${e.message})")
+                Log.d(TAG, "queryIntentActivities failed for $candidate", e)
+                emptyList()
+            }
+            for (resolve in matches) {
+                val pkg = resolve.activityInfo.packageName
+                if (pkg == context.packageName) continue
+                val target = ComponentName(pkg, resolve.activityInfo.name)
+                if (uniqueTargets.containsKey(target)) continue
+                uniqueTargets[target] = Intent(candidate).apply {
+                    // Bind this candidate intent to the concrete file-manager activity.
+                    this.component = target
+                    `package` = null
+                }
             }
         }
-        return false
+
+        if (uniqueTargets.isEmpty()) {
+            // Nothing advertised support; still try a raw chooser on the primary intent.
+            return try {
+                val primary = Intent(candidates.first()).apply {
+                    addCategory(Intent.CATEGORY_DEFAULT)
+                }
+                val chooser = Intent.createChooser(primary, "Open folder with")
+                startActivity(context, chooser)
+                true
+            } catch (e: Exception) {
+                Log.d(TAG, "Raw folder chooser failed", e)
+                false
+            }
+        }
+
+        val targetList = uniqueTargets.values.toList()
+        val primary = targetList.first()
+        val extras = targetList.drop(1).toTypedArray()
+
+        return try {
+            val chooser = Intent.createChooser(primary, "Open folder with").apply {
+                if (extras.isNotEmpty()) {
+                    putExtra(Intent.EXTRA_INITIAL_INTENTS, extras)
+                }
+            }
+            startActivity(context, chooser)
+            Log.d(TAG, "Started file-manager chooser with ${targetList.size} target(s)")
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "File-manager chooser failed", e)
+            false
+        }
     }
 
     /**

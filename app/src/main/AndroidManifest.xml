@@ -10,6 +10,21 @@
             <action android:name="android.intent.action.VIEW" />
             <data android:scheme="file" />
         </intent>
+        <!-- Discover file managers that handle directory documents -->
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:mimeType="vnd.android.document/directory" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:mimeType="resource/folder" />
+        </intent>
+        <intent>
+            <action android:name="android.provider.action.BROWSE" />
+        </intent>
+        <intent>
+            <action android:name="android.provider.action.BROWSE_DOCUMENT_ROOT" />
+        </intent>
         <package android:name="com.android.documentsui" />
         <package android:name="com.google.android.documentsui" />
     </queries>
