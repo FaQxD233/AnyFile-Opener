@@ -87,9 +87,6 @@ class OpenAsBottomSheet : BottomSheetDialogFragment() {
         var resolvedFileName: String? = uri.lastPathSegment
         var detectedMime = prefs.defaultMime.ifBlank { "application/octet-stream" }
 
-        binding.btnOpenFolder.setOnClickListener {
-            IntentRouter.openFolder(requireContext(), uri)
-        }
         binding.btnShare.setOnClickListener {
             IntentRouter.share(
                 requireContext(),

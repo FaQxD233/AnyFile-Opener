@@ -40,7 +40,7 @@ Automatically handles the complex `FLAG_GRANT_READ_URI_PERMISSION` propagation, 
 A deep-dive tool into file metadata and structure:
 - **Hex & ASCII Dump**: Real-time paginated viewing (`buildHexDump` & `buildAsciiPreview`) of file headers and raw byte contents.
 - **Header Verification**: Compares magic-byte detection against filesystem metadata.
-- **Quick Access**: One-tap button to jump directly to the containing folder of any inspected file.
+- **Share Action**: Forward the inspected file to another app (including file managers like MT) via the system share sheet.
 
 ### 🗂 Recent Files & Storage Shortcuts
 - **Recent File History**: DataStore-backed storage (`RecentFileStore`) tracking recently analyzed files for quick re-opening.
@@ -78,7 +78,7 @@ To ensure long-term reliability and prevent the "messed up" states typical of le
 - [x] **Hybrid UI Architecture** (Jetpack Compose + ViewBinding BottomSheets)
 - [x] **Lifecycle Stability Fixes** (`viewLifecycleOwner`-bound bottom-sheet work)
 - [x] **Binary Inspector UI** (Hex & ASCII dumps, pagination, metadata inspection)
-- [x] **Quick Access Folder Routing** (One-tap containing folder navigation)
+- [x] **Share Action** (Hand files to file managers / other apps via ACTION_SEND)
 - [x] **Production Signing Configuration** (Graceful `keystore.properties` support)
 - [x] **Repository Relocation** (Synchronized at `AnyFile-Opener`)
 
@@ -89,7 +89,7 @@ To ensure long-term reliability and prevent the "messed up" states typical of le
 - [x] **Batch Processing**: Sequential handling of shared files with queue controls.
 - [x] **Default App Rules**: Per-MIME and per-extension target application rules.
 - [ ] **Custom Detection Rules**: User-definable magic-byte and extension-to-MIME overrides.
-- [x] **Quick Access**: Jump directly to the containing folder of any analyzed file with one tap.
+- [x] **Share Action**: Hand files to file managers / other apps via the system share sheet.
 - [x] **Hex & ASCII Inspector**: Native lightweight hex/ASCII preview inside the inspection sheet.
 
 ---

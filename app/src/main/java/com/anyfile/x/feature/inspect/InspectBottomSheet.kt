@@ -56,9 +56,6 @@ class InspectBottomSheet : BottomSheetDialogFragment() {
         var resolvedFileName: String? = null
         var detectedMime = "application/octet-stream"
 
-        binding.btnOpenFolder.setOnClickListener {
-            IntentRouter.openFolder(requireContext(), uri)
-        }
         binding.btnShare.setOnClickListener {
             IntentRouter.share(
                 requireContext(),
