@@ -1,5 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!--
+  App Widget layouts are inflated through RemoteViews, which support
+  android:tint on ImageView but not AppCompat app:tint.
+-->
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
     android:id="@+id/widget_root"
     android:layout_width="wrap_content"
     android:layout_height="wrap_content"
@@ -12,7 +17,8 @@
         android:layout_width="40dp"
         android:layout_height="40dp"
         android:src="@android:drawable/ic_menu_save"
-        android:tint="#8B7FD4" />
+        android:tint="#8B7FD4"
+        tools:ignore="UseAppTint" />
 
     <TextView
         android:layout_width="wrap_content"
