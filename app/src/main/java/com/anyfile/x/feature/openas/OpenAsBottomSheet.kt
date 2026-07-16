@@ -124,7 +124,8 @@ class OpenAsBottomSheet : BottomSheetDialogFragment() {
 
             setupDefaultRuleSummary(fileName, detectedResult.mime)
             setupLastAppChip(uri, fileName, detectedResult.mime)
-            setupRuleActions(uri, fileName, detectedResult.mime)
+            // Default-rule setup actions stay hidden in the open sheet; manage rules in Settings.
+            binding.defaultRuleActions.visibility = View.GONE
 
             val types = MimeDetector.FileType.entries.filter { it != MimeDetector.FileType.UNKNOWN }
             val detectedIndex = types.indexOf(detectedResult.fileType)
@@ -156,40 +157,6 @@ class OpenAsBottomSheet : BottomSheetDialogFragment() {
         binding.queueActions.visibility = View.VISIBLE
         binding.btnSkipFile.setOnClickListener { complete(OUTCOME_SKIPPED) }
         binding.btnCancelQueue.setOnClickListener { complete(OUTCOME_CANCELLED) }
-    }
-
-    private fun setupRuleActions(uri: Uri, fileName: String?, mime: String) {
-        val normalizedMime = DefaultAppRuleStore.normalizeMime(mime)
-        binding.btnSetMimeDefault.visibility =
-            if (normalizedMime == null) View.GONE else View.VISIBLE
-        binding.btnSetMimeDefault.text = normalizedMime?.let { "Default for $it" }
-        binding.btnSetMimeDefault.setOnClickListener {
-            val result = IntentRouter.chooseAndSaveDefault(
-                requireContext(),
-                uri,
-                mime,
-                fileName,
-                DefaultAppRuleScope.MIME,
-                trackChooserResult = isManagedQueue()
-            )
-            handleOpenResult(result)
-        }
-
-        val extension = DefaultAppRuleStore.normalizeExtension(fileName)
-        binding.btnSetExtensionDefault.visibility =
-            if (extension == null) View.GONE else View.VISIBLE
-        binding.btnSetExtensionDefault.text = extension?.let { "Default for .$it" }
-        binding.btnSetExtensionDefault.setOnClickListener {
-            val result = IntentRouter.chooseAndSaveDefault(
-                requireContext(),
-                uri,
-                mime,
-                fileName,
-                DefaultAppRuleScope.EXTENSION,
-                trackChooserResult = isManagedQueue()
-            )
-            handleOpenResult(result)
-        }
     }
 
     private fun setupDefaultRuleSummary(fileName: String?, mime: String) {
