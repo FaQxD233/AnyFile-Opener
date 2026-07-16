@@ -54,6 +54,21 @@ object IntentRouter {
     private const val DOWNLOADS_DOCUMENTS_AUTHORITY = "com.android.providers.downloads.documents"
     private const val MEDIA_DOCUMENTS_AUTHORITY = "com.android.providers.media.documents"
 
+    private val DOCUMENTS_UI_PACKAGES = listOf(
+        "com.google.android.documentsui",
+        "com.android.documentsui"
+    )
+
+    // OEM / app-private roots that look like folders but are useless or non-browsable.
+    private val HIDDEN_OR_PRIVATE_SEGMENTS = setOf(
+        "datastorage",
+        ".datastorage",
+        "android_secure",
+        "lost.dir",
+        "found.000",
+        "system volume information"
+    )
+
     /**
      * Opens a URI with a saved default rule when one exists, otherwise shows the
      * system chooser. URI access is granted only through the launched intent.
@@ -382,17 +397,23 @@ object IntentRouter {
             else -> return null
         }
 
-        queryMediaLocation(context, uri)?.let { return it }
-
+        // Prefer Documents path-like ids first; MediaStore often returns OEM private
+        // roots such as ".DataStorage" which are not user-browsable folders.
         if (DocumentsContract.isDocumentUri(context, uri) || isTreeDocumentUri(uri)) {
             resolveDocumentParent(context, uri)?.let { return it }
         }
 
+        queryMediaLocation(context, uri)?.let { return it }
         resolveMediaStoreParent(context, uri)?.let { return it }
 
-        // FileProvider / custom providers sometimes embed a real path in the URI path.
         extractEmbeddedAbsolutePath(uri)?.let { absolute ->
-            File(absolute).parent?.let { return absolutePathToParent(it) }
+            // Embedded path may include the filename; use parent directory.
+            val parent = if (looksLikeFilePath(absolute)) {
+                File(absolute).parent
+            } else {
+                absolute
+            }
+            parent?.let { return absolutePathToParent(it) }
         }
 
         return null
@@ -400,6 +421,11 @@ object IntentRouter {
 
     private fun isTreeDocumentUri(uri: Uri): Boolean =
         runCatching { DocumentsContract.isTreeUri(uri) }.getOrDefault(false)
+
+    private fun looksLikeFilePath(path: String): Boolean {
+        val name = path.substringAfterLast('/')
+        return name.contains('.') && !name.startsWith('.')
+    }
 
     private fun extractEmbeddedAbsolutePath(uri: Uri): String? {
         val candidates = buildList {
@@ -425,10 +451,8 @@ object IntentRouter {
                 else -> null
             } ?: continue
 
-            // Strip trailing file name if this still looks like a file path with extension.
-            val asFile = File(absolute)
-            if (asFile.exists() || absolute.startsWith("/storage/") || absolute.startsWith("/sdcard/")) {
-                return absolute
+            if (absolute.startsWith("/storage/") || absolute.startsWith("/sdcard/") || File(absolute).exists()) {
+                return absolute.trimEnd('/')
             }
         }
         return null
@@ -453,17 +477,17 @@ object IntentRouter {
 
         // Path-like document ids: primary:Download/a.pdf, home:Documents/a.pdf, UUID:DCIM/a.jpg
         parsePathLikeDocumentId(documentId)?.let { (volume, parentRelative) ->
-            val parentId = "$volume:$parentRelative"
-            // Prefer externalstorage-style launch; it is the only broadly openable directory form.
+            val sanitized = sanitizeStorageDocumentId(volume, parentRelative)
             if (uri.authority == EXTERNAL_STORAGE_AUTHORITY ||
                 volume == "primary" ||
                 volume == "home" ||
-                volume.contains('-') // secondary volume UUID
+                volume.contains('-')
             ) {
-                return ParentDirectory.StorageDocument(parentId)
+                return ParentDirectory.StorageDocument(sanitized)
             }
-            val parentUri = buildParentDocumentUri(uri, parentId)
-            return ParentDirectory.DocumentUri(parentUri)
+            return ParentDirectory.DocumentUri(
+                buildParentDocumentUri(uri, sanitized)
+            )
         }
 
         // downloads provider: ms:<id> / msf:<id> / plain numeric ids
@@ -472,6 +496,8 @@ object IntentRouter {
             if (mediaId.all { it.isDigit() }) {
                 resolveMediaStoreParentById(context, mediaId.toLong())?.let { return it }
             }
+            // Common downloads root fallback when the provider hides real paths.
+            return ParentDirectory.StorageDocument("primary:Download")
         }
 
         // media documents: image:123 / video:123 / audio:123 / document:123
@@ -497,7 +523,7 @@ object IntentRouter {
             runCatching {
                 DocumentsContract.findDocumentPath(context.contentResolver, uri)
             }.getOrNull()?.path?.takeIf { it.size >= 2 }?.let { segments ->
-                val parentId = segments[segments.lastIndex - 1]
+                val parentId = sanitizeExistingDocumentId(segments[segments.lastIndex - 1])
                 if (uri.authority == EXTERNAL_STORAGE_AUTHORITY || parentId.contains(':')) {
                     return ParentDirectory.StorageDocument(parentId)
                 }
@@ -511,7 +537,6 @@ object IntentRouter {
     private fun resolveMediaStoreParent(context: Context, uri: Uri): ParentDirectory? {
         queryMediaLocation(context, uri)?.let { return it }
 
-        // content://media/external/file/<id>, images/media/<id>, etc.
         val last = uri.lastPathSegment ?: return null
         if (!last.all { it.isDigit() }) return null
         return resolveMediaStoreParentById(context, last.toLong())
@@ -538,13 +563,60 @@ object IntentRouter {
         val volume = documentId.substringBefore(':')
         val relative = documentId.substringAfter(':')
         if (volume.isBlank()) return null
-        // Opaque numeric / ms-style ids are not filesystem relative paths.
         if (relative.isBlank()) return volume to ""
         if (relative.all { it.isDigit() }) return null
         if (relative.startsWith("ms", ignoreCase = true) && !relative.contains('/')) return null
         if (relative.startsWith("msf", ignoreCase = true) && !relative.contains('/')) return null
+        // documentId points at the file; parent is everything before the last segment.
         val parentRelative = relative.substringBeforeLast('/', missingDelimiterValue = "")
         return volume to parentRelative
+    }
+
+    /**
+     * OEM private roots like ".DataStorage" are not useful folder destinations and some
+     * file managers treat them as mysterious files. Climb to the nearest public folder.
+     */
+    private fun sanitizeStorageDocumentId(volume: String, relativePath: String): String {
+        val volumeKey = when (volume) {
+            "home" -> "primary"
+            else -> volume
+        }
+        val segments = relativePath
+            .replace('\\', '/')
+            .split('/')
+            .map { it.trim() }
+            .filter { it.isNotEmpty() && it != "." && it != ".." }
+
+        if (segments.isEmpty()) return "$volumeKey:"
+
+        // Drop trailing hidden/private segments until a public path remains.
+        val kept = segments.toMutableList()
+        while (kept.isNotEmpty() && isNonBrowsableSegment(kept.last())) {
+            kept.removeAt(kept.lastIndex)
+        }
+        // If the whole path was private (e.g. only ".DataStorage"), open volume root.
+        if (kept.isEmpty() || kept.all { isNonBrowsableSegment(it) }) {
+            return "$volumeKey:"
+        }
+        // Also strip leading private roots such as ".DataStorage/Download" -> "Download"
+        while (kept.isNotEmpty() && isNonBrowsableSegment(kept.first())) {
+            kept.removeAt(0)
+        }
+        if (kept.isEmpty()) return "$volumeKey:"
+        return "$volumeKey:${kept.joinToString("/")}"
+    }
+
+    private fun sanitizeExistingDocumentId(documentId: String): String {
+        if (!documentId.contains(':')) return documentId
+        val volume = documentId.substringBefore(':')
+        val relative = documentId.substringAfter(':')
+        return sanitizeStorageDocumentId(volume, relative)
+    }
+
+    private fun isNonBrowsableSegment(segment: String): Boolean {
+        val name = segment.lowercase(Locale.ROOT)
+        if (name.startsWith(".")) return true
+        return name in HIDDEN_OR_PRIVATE_SEGMENTS
     }
 
     private fun buildParentDocumentUri(sourceUri: Uri, parentId: String): Uri {
@@ -577,8 +649,6 @@ object IntentRouter {
         absolutePathToDocumentId(normalized.absolutePath)?.let { documentId ->
             if (tryStartAny(context, storageDocumentDirectoryIntents(documentId))) return true
         }
-
-        // Avoid Uri.fromFile (FileUriExposedException on modern Android).
         return false
     }
 
@@ -598,111 +668,135 @@ object IntentRouter {
             if (path == prefix) return "primary:"
             if (path.startsWith("$prefix/")) {
                 val relative = path.removePrefix(prefix).trimStart('/')
-                return if (relative.isEmpty()) "primary:" else "primary:$relative"
+                return sanitizeStorageDocumentId("primary", relative)
             }
         }
 
-        // /storage/<uuid>/... secondary volumes
         val match = Regex("^/storage/([^/]+)(?:/(.*))?$").matchEntire(path) ?: return null
         val volume = match.groupValues[1]
         if (volume == "emulated" || volume == "self") return null
         val relative = match.groupValues.getOrNull(2).orEmpty()
-        return if (relative.isBlank()) "$volume:" else "$volume:$relative"
+        return sanitizeStorageDocumentId(volume, relative)
     }
 
     /**
-     * Launch intents for external-storage style folder document ids.
-     * Important: do NOT set FLAG_GRANT_READ_URI_PERMISSION — we do not own these URIs,
-     * and granting them causes SecurityException that made every attempt fall through.
+     * Launch folder intents with DocumentsUI first.
+     * Generic ACTION_VIEW is last because third-party managers (e.g. ES) often claim
+     * document URIs and open them as mysterious files instead of folders.
+     *
+     * Do NOT set FLAG_GRANT_READ_URI_PERMISSION — we do not own these URIs.
      */
     private fun storageDocumentDirectoryIntents(documentId: String): List<Intent> {
+        val safeId = sanitizeExistingDocumentId(documentId)
         val documentUri =
-            DocumentsContract.buildDocumentUri(EXTERNAL_STORAGE_AUTHORITY, documentId)
+            DocumentsContract.buildDocumentUri(EXTERNAL_STORAGE_AUTHORITY, safeId)
         val treeUri =
-            DocumentsContract.buildTreeDocumentUri(EXTERNAL_STORAGE_AUTHORITY, documentId)
+            DocumentsContract.buildTreeDocumentUri(EXTERNAL_STORAGE_AUTHORITY, safeId)
         val treeDocUri =
-            DocumentsContract.buildDocumentUriUsingTree(treeUri, documentId)
+            DocumentsContract.buildDocumentUriUsingTree(treeUri, safeId)
+        val rootUri = Uri.parse("content://$EXTERNAL_STORAGE_AUTHORITY/root/primary")
 
-        return listOf(
-            // Preferred: open folder document in Files/DocumentsUI.
-            Intent(Intent.ACTION_VIEW).apply {
+        val intents = mutableListOf<Intent>()
+
+        // 1) System Files / DocumentsUI first (both package names).
+        for (pkg in DOCUMENTS_UI_PACKAGES) {
+            intents += Intent(Intent.ACTION_VIEW).apply {
                 setDataAndType(documentUri, DocumentsContract.Document.MIME_TYPE_DIR)
-            },
-            Intent(Intent.ACTION_VIEW).apply {
-                setDataAndType(treeDocUri, DocumentsContract.Document.MIME_TYPE_DIR)
-            },
-            Intent(Intent.ACTION_VIEW).apply {
-                setDataAndType(documentUri, "resource/folder")
-            },
-            Intent(Intent.ACTION_VIEW).apply {
-                setDataAndType(documentUri, DocumentsContract.Document.MIME_TYPE_DIR)
-                setPackage("com.google.android.documentsui")
-            },
-            Intent(Intent.ACTION_VIEW).apply {
-                setDataAndType(documentUri, DocumentsContract.Document.MIME_TYPE_DIR)
-                setPackage("com.android.documentsui")
-            },
-            Intent(Intent.ACTION_VIEW).apply {
-                setDataAndType(treeUri, DocumentsContract.Document.MIME_TYPE_DIR)
-                setPackage("com.google.android.documentsui")
-            },
-            Intent(Intent.ACTION_VIEW).apply {
-                setDataAndType(treeUri, DocumentsContract.Document.MIME_TYPE_DIR)
-                setPackage("com.android.documentsui")
-            },
-            Intent("android.provider.action.BROWSE").apply {
-                setDataAndType(documentUri, DocumentsContract.Document.MIME_TYPE_DIR)
-            },
-            Intent("android.provider.action.BROWSE_DOCUMENT_ROOT").apply {
-                data = treeUri
+                setPackage(pkg)
             }
-        )
+            intents += Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(treeDocUri, DocumentsContract.Document.MIME_TYPE_DIR)
+                setPackage(pkg)
+            }
+            intents += Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(treeUri, DocumentsContract.Document.MIME_TYPE_DIR)
+                setPackage(pkg)
+            }
+            intents += Intent("android.provider.action.BROWSE").apply {
+                setDataAndType(documentUri, DocumentsContract.Document.MIME_TYPE_DIR)
+                setPackage(pkg)
+            }
+            intents += Intent("android.provider.action.BROWSE_DOCUMENT_ROOT").apply {
+                data = if (safeId == "primary:" || safeId == "primary") rootUri else treeUri
+                setPackage(pkg)
+            }
+        }
+
+        // 2) Explicit directory MIME without package (may still hit a good handler).
+        intents += Intent(Intent.ACTION_VIEW).apply {
+            setDataAndType(documentUri, DocumentsContract.Document.MIME_TYPE_DIR)
+            addCategory(Intent.CATEGORY_DEFAULT)
+        }
+        intents += Intent(Intent.ACTION_VIEW).apply {
+            setDataAndType(treeDocUri, DocumentsContract.Document.MIME_TYPE_DIR)
+            addCategory(Intent.CATEGORY_DEFAULT)
+        }
+        intents += Intent("android.provider.action.BROWSE").apply {
+            setDataAndType(documentUri, DocumentsContract.Document.MIME_TYPE_DIR)
+        }
+        intents += Intent("android.provider.action.BROWSE_DOCUMENT_ROOT").apply {
+            data = if (safeId == "primary:" || safeId == "primary") rootUri else treeUri
+        }
+
+        // 3) Initial-uri document pickers as last useful fallback (lands near the folder).
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            intents += Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                addCategory(Intent.CATEGORY_OPENABLE)
+                type = "*/*"
+                putExtra(DocumentsContract.EXTRA_INITIAL_URI, documentUri)
+            }
+            intents += Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).apply {
+                putExtra(DocumentsContract.EXTRA_INITIAL_URI, documentUri)
+            }
+        }
+
+        return intents
     }
 
-    private fun genericDirectoryIntents(dirUri: Uri): List<Intent> = listOf(
-        Intent(Intent.ACTION_VIEW).apply {
+    private fun genericDirectoryIntents(dirUri: Uri): List<Intent> {
+        val intents = mutableListOf<Intent>()
+        for (pkg in DOCUMENTS_UI_PACKAGES) {
+            intents += Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(dirUri, DocumentsContract.Document.MIME_TYPE_DIR)
+                setPackage(pkg)
+            }
+            intents += Intent("android.provider.action.BROWSE").apply {
+                setDataAndType(dirUri, DocumentsContract.Document.MIME_TYPE_DIR)
+                setPackage(pkg)
+            }
+        }
+        intents += Intent(Intent.ACTION_VIEW).apply {
             setDataAndType(dirUri, DocumentsContract.Document.MIME_TYPE_DIR)
-        },
-        Intent(Intent.ACTION_VIEW).apply {
-            setDataAndType(dirUri, "resource/folder")
-        },
-        Intent(Intent.ACTION_VIEW).apply {
-            setDataAndType(dirUri, DocumentsContract.Document.MIME_TYPE_DIR)
-            setPackage("com.google.android.documentsui")
-        },
-        Intent(Intent.ACTION_VIEW).apply {
-            setDataAndType(dirUri, DocumentsContract.Document.MIME_TYPE_DIR)
-            setPackage("com.android.documentsui")
-        },
-        Intent("android.provider.action.BROWSE").apply {
+            addCategory(Intent.CATEGORY_DEFAULT)
+        }
+        intents += Intent("android.provider.action.BROWSE").apply {
             setDataAndType(dirUri, DocumentsContract.Document.MIME_TYPE_DIR)
         }
-    )
+        return intents
+    }
 
     private fun openSystemStorageRoot(context: Context): Boolean {
         val root = Uri.parse("content://$EXTERNAL_STORAGE_AUTHORITY/root/primary")
         val primaryDoc = DocumentsContract.buildDocumentUri(EXTERNAL_STORAGE_AUTHORITY, "primary:")
-        val intents = listOf(
-            Intent("android.provider.action.BROWSE_DOCUMENT_ROOT").apply { data = root },
-            Intent(Intent.ACTION_VIEW).apply {
-                setDataAndType(root, "vnd.android.document/root")
-            },
-            Intent(Intent.ACTION_VIEW).apply {
-                setDataAndType(primaryDoc, DocumentsContract.Document.MIME_TYPE_DIR)
-            },
-            Intent(Intent.ACTION_VIEW).apply {
-                setDataAndType(primaryDoc, DocumentsContract.Document.MIME_TYPE_DIR)
-                setPackage("com.google.android.documentsui")
-            },
-            Intent(Intent.ACTION_VIEW).apply {
-                setDataAndType(primaryDoc, DocumentsContract.Document.MIME_TYPE_DIR)
-                setPackage("com.android.documentsui")
-            },
-            Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
-                addCategory(Intent.CATEGORY_OPENABLE)
-                type = "*/*"
+        val intents = mutableListOf<Intent>()
+        for (pkg in DOCUMENTS_UI_PACKAGES) {
+            intents += Intent("android.provider.action.BROWSE_DOCUMENT_ROOT").apply {
+                data = root
+                setPackage(pkg)
             }
-        )
+            intents += Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(primaryDoc, DocumentsContract.Document.MIME_TYPE_DIR)
+                setPackage(pkg)
+            }
+        }
+        intents += Intent("android.provider.action.BROWSE_DOCUMENT_ROOT").apply { data = root }
+        intents += Intent(Intent.ACTION_VIEW).apply {
+            setDataAndType(primaryDoc, DocumentsContract.Document.MIME_TYPE_DIR)
+        }
+        intents += Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = "*/*"
+        }
         return tryStartAny(context, intents)
     }
 
@@ -752,13 +846,14 @@ object IntentRouter {
                         cursor.getColumnIndex(MediaStore.MediaColumns.RELATIVE_PATH)
                     if (relativeIndex >= 0 && !cursor.isNull(relativeIndex)) {
                         val relative = cursor.getString(relativeIndex)
+                            ?.replace('\\', '/')
                             ?.trim('/')
                             ?.trim()
                             .orEmpty()
-                        // RELATIVE_PATH is the containing folder, e.g. "Download/" or "DCIM/Camera/".
-                        val documentId =
-                            if (relative.isEmpty()) "primary:" else "primary:$relative"
-                        return@use ParentDirectory.StorageDocument(documentId)
+                        // RELATIVE_PATH already is the containing folder.
+                        return@use ParentDirectory.StorageDocument(
+                            sanitizeStorageDocumentId("primary", relative)
+                        )
                     }
                 }
                 null
