@@ -127,14 +127,26 @@ class OpenAsBottomSheet : BottomSheetDialogFragment() {
             // Default-rule setup actions stay hidden in the open sheet; manage rules in Settings.
             binding.defaultRuleActions.visibility = View.GONE
 
-            val types = MimeDetector.FileType.entries.filter { it != MimeDetector.FileType.UNKNOWN }
-            val detectedIndex = types.indexOf(detectedResult.fileType)
+            val categories = MimeDetector.FileType.entries.filter { it != MimeDetector.FileType.UNKNOWN }
+            // 1 recommended + 8 categories = 3x3 grid; recommended uses the exact detected MIME.
+            val gridItems = buildList {
+                add(OpenAsGridItem.Recommended(detectedResult.mime, detectedResult.fileType))
+                categories.forEach { add(OpenAsGridItem.Category(it)) }
+            }
             binding.typeList.layoutManager = GridLayoutManager(requireContext(), 3)
-            binding.typeList.adapter = FileTypeAdapter(types, detectedIndex) { selectedType ->
-                val mime = if (selectedType == detectedResult.fileType) {
-                    detectedResult.mime
-                } else {
-                    MimeDetector.mimeOf(selectedType, prefs.defaultMime)
+            binding.typeList.adapter = FileTypeAdapter(
+                items = gridItems,
+                selectedIndex = 0
+            ) { item ->
+                val mime = when (item) {
+                    is OpenAsGridItem.Recommended -> item.mime
+                    is OpenAsGridItem.Category -> {
+                        if (item.type == detectedResult.fileType) {
+                            detectedResult.mime
+                        } else {
+                            MimeDetector.mimeOf(item.type, prefs.defaultMime)
+                        }
+                    }
                 }
                 handleOpenResult(
                     IntentRouter.open(

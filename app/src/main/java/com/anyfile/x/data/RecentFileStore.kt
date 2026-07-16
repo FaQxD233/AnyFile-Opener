@@ -3,6 +3,7 @@ package com.anyfile.x.data
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.provider.OpenableColumns
 import android.util.Log
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
@@ -25,8 +26,6 @@ object RecentFileStore {
     fun addRecentFileAsync(context: Context, file: RecentFile): Boolean {
         val appContext = context.applicationContext
         // Persist permission when possible, but still keep a history entry for temporary URIs.
-        // Temporary grant may die with the source app, yet the list remains useful for
-        // SAF-selected files and same-session reopens.
         acquirePersistentReadPermission(appContext, Uri.parse(file.uri))
 
         ioScope.launch {
@@ -37,6 +36,28 @@ object RecentFileStore {
             }
         }
         return true
+    }
+
+    fun removeRecentFileAsync(context: Context, uri: String) {
+        val appContext = context.applicationContext
+        ioScope.launch {
+            try {
+                removeRecentFile(appContext, uri)
+            } catch (e: Exception) {
+                Log.e("RecentFileStore", "Could not remove recent file $uri", e)
+            }
+        }
+    }
+
+    fun clearRecentFilesAsync(context: Context) {
+        val appContext = context.applicationContext
+        ioScope.launch {
+            try {
+                clearRecentFiles(appContext)
+            } catch (e: Exception) {
+                Log.e("RecentFileStore", "Could not clear recent files", e)
+            }
+        }
     }
 
     fun getRecentFiles(context: Context): Flow<List<RecentFile>> {
@@ -50,6 +71,34 @@ object RecentFileStore {
         }
     }
 
+    /** Best-effort check whether a recent URI is still readable. */
+    fun isReadable(context: Context, uriString: String): Boolean {
+        val uri = runCatching { Uri.parse(uriString) }.getOrNull() ?: return false
+        val resolver = context.applicationContext.contentResolver
+        return try {
+            when (uri.scheme?.lowercase()) {
+                "content" -> {
+                    val listed = resolver.query(
+                        uri,
+                        arrayOf(OpenableColumns.DISPLAY_NAME),
+                        null,
+                        null,
+                        null
+                    )?.use { cursor -> cursor.moveToFirst() }
+                    if (listed == true) return true
+                    resolver.openAssetFileDescriptor(uri, "r")?.use { true } ?: false
+                }
+                "file" -> {
+                    val path = uri.path ?: return false
+                    java.io.File(path).exists()
+                }
+                else -> false
+            }
+        } catch (_: Exception) {
+            false
+        }
+    }
+
     private suspend fun addRecentFile(context: Context, file: RecentFile) {
         var evictedUris: List<String> = emptyList()
         context.recentFilesDataStore.edit { preferences ->
@@ -60,24 +109,54 @@ object RecentFileStore {
                 mutableListOf()
             }
 
-            // Remove if already exists (to bump to top)
             currentList.removeAll { it.uri == file.uri }
             currentList.add(0, file)
 
-            // Limit to 10
             val limitedList = currentList.take(10)
             evictedUris = currentList.drop(10).map { it.uri }
             preferences[RECENT_FILES_KEY] = Json.encodeToString(limitedList)
         }
 
-        evictedUris.forEach { uriString ->
+        releasePermissions(context, evictedUris)
+    }
+
+    private suspend fun removeRecentFile(context: Context, uri: String) {
+        context.recentFilesDataStore.edit { preferences ->
+            val currentJson = preferences[RECENT_FILES_KEY] ?: "[]"
+            val currentList = try {
+                Json.decodeFromString<List<RecentFile>>(currentJson).toMutableList()
+            } catch (e: Exception) {
+                mutableListOf()
+            }
+            currentList.removeAll { it.uri == uri }
+            preferences[RECENT_FILES_KEY] = Json.encodeToString(currentList)
+        }
+        releasePermissions(context, listOf(uri))
+    }
+
+    private suspend fun clearRecentFiles(context: Context) {
+        var uris: List<String> = emptyList()
+        context.recentFilesDataStore.edit { preferences ->
+            val currentJson = preferences[RECENT_FILES_KEY] ?: "[]"
+            uris = try {
+                Json.decodeFromString<List<RecentFile>>(currentJson).map { it.uri }
+            } catch (e: Exception) {
+                emptyList()
+            }
+            preferences[RECENT_FILES_KEY] = "[]"
+        }
+        releasePermissions(context, uris)
+    }
+
+    private fun releasePermissions(context: Context, uris: List<String>) {
+        uris.forEach { uriString ->
             try {
                 context.contentResolver.releasePersistableUriPermission(
                     Uri.parse(uriString),
                     Intent.FLAG_GRANT_READ_URI_PERMISSION
                 )
             } catch (_: Exception) {
-                // The URI may have come from a non-persistable provider.
+                // Non-persistable or already released.
             }
         }
     }
@@ -97,7 +176,6 @@ object RecentFileStore {
             }
             true
         } catch (_: Exception) {
-            // ACTION_SEND and many third-party providers offer temporary access only.
             false
         }
     }

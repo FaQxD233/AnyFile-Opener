@@ -189,15 +189,15 @@ fun LauncherScreen(
             }
 
             item {
-                Button(
+                TextButton(
                     onClick = onSystemFilesClick,
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = MaterialTheme.colorScheme.secondaryContainer,
-                        contentColor = MaterialTheme.colorScheme.onSecondaryContainer
-                    )
+                    modifier = Modifier.fillMaxWidth()
                 ) {
-                    Icon(Icons.Default.Folder, contentDescription = null)
+                    Icon(
+                        Icons.Default.Folder,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp)
+                    )
                     Spacer(Modifier.width(8.dp))
                     Text("System File Manager")
                 }
@@ -205,23 +205,46 @@ fun LauncherScreen(
 
             if (recentFiles.isNotEmpty()) {
                 item {
-                    Text(
-                        "Recent Files",
-                        style = MaterialTheme.typography.titleMedium,
-                        modifier = Modifier.padding(top = 8.dp)
-                    )
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            "Recent Files",
+                            style = MaterialTheme.typography.titleMedium,
+                            modifier = Modifier.weight(1f)
+                        )
+                        TextButton(onClick = {
+                            RecentFileStore.clearRecentFilesAsync(context)
+                        }) {
+                            Text("Clear")
+                        }
+                    }
                 }
 
-                items(recentFiles) { recent ->
-                    RecentFileItem(recent = recent) {
-                        val uri = Uri.parse(recent.uri)
-                        viewModel.resetDetection()
-                        selectedUriString = uri.toString()
-                        fileName = recent.fileName
-                        manualMime = ""
-                        autoOpenPending = false
-                        selectionVersion++
+                items(recentFiles, key = { it.uri }) { recent ->
+                    val readable = remember(recent.uri) {
+                        RecentFileStore.isReadable(context, recent.uri)
                     }
+                    RecentFileItem(
+                        recent = recent,
+                        expired = !readable,
+                        onRemove = {
+                            RecentFileStore.removeRecentFileAsync(context, recent.uri)
+                        },
+                        onClick = {
+                            if (!readable) return@RecentFileItem
+                            val uri = Uri.parse(recent.uri)
+                            viewModel.resetDetection()
+                            selectedUriString = uri.toString()
+                            fileName = recent.fileName
+                            manualMime = ""
+                            autoOpenPending = false
+                            selectionVersion++
+                        }
+                    )
                 }
             }
 
@@ -305,21 +328,40 @@ fun ActionButtons(
     onInspect: () -> Unit
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Button(onClick = onOpenNormal, enabled = enabled, modifier = Modifier.weight(1f)) {
-                Text("Open Normally")
+        Button(
+            onClick = onOpenNormal,
+            enabled = enabled,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text("Open")
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            FilledTonalButton(
+                onClick = onShare,
+                enabled = enabled,
+                modifier = Modifier.weight(1f)
+            ) {
+                Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("Share")
             }
-            FilledTonalButton(onClick = onShare, enabled = enabled) {
-                Icon(Icons.Default.Share, contentDescription = "Share")
+            OutlinedButton(
+                onClick = onOpenAs,
+                enabled = enabled,
+                modifier = Modifier.weight(1f)
+            ) {
+                Text("Open As…")
             }
         }
-        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedButton(onClick = onOpenAs, enabled = enabled, modifier = Modifier.weight(1f)) {
-                Text("Open As...")
-            }
-            OutlinedButton(onClick = onInspect, enabled = enabled, modifier = Modifier.weight(1f)) {
-                Text("Inspect Binary")
-            }
+        TextButton(
+            onClick = onInspect,
+            enabled = enabled,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text("Inspect Binary")
         }
     }
 }
@@ -373,15 +415,64 @@ fun MimeChips(onChipClick: (String) -> Unit) {
 }
 
 @Composable
-fun RecentFileItem(recent: RecentFile, onClick: () -> Unit) {
+fun RecentFileItem(
+    recent: RecentFile,
+    expired: Boolean,
+    onRemove: () -> Unit,
+    onClick: () -> Unit
+) {
     val sdf = remember { SimpleDateFormat("MMM dd, HH:mm", Locale.getDefault()) }
+    val subtitle = buildString {
+        append(recent.mimeType)
+        append(" • ")
+        append(sdf.format(Date(recent.timestamp)))
+        if (expired) append(" • Expired")
+    }
 
     ListItem(
-        headlineContent = { Text(recent.fileName, maxLines = 1) },
-        supportingContent = { Text("${recent.mimeType} • ${sdf.format(Date(recent.timestamp))}") },
-        leadingContent = { Icon(Icons.Default.History, contentDescription = null) },
+        headlineContent = {
+            Text(
+                recent.fileName,
+                maxLines = 1,
+                color = if (expired) {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                } else {
+                    MaterialTheme.colorScheme.onSurface
+                }
+            )
+        },
+        supportingContent = {
+            Text(
+                subtitle,
+                color = if (expired) {
+                    MaterialTheme.colorScheme.error
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                }
+            )
+        },
+        leadingContent = {
+            Icon(
+                imageVector = if (expired) Icons.Default.LinkOff else Icons.Default.History,
+                contentDescription = null,
+                tint = if (expired) {
+                    MaterialTheme.colorScheme.error
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                }
+            )
+        },
+        trailingContent = {
+            IconButton(onClick = onRemove) {
+                Icon(
+                    Icons.Default.Close,
+                    contentDescription = "Remove from recent",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        },
         modifier = Modifier
-            .clickable(onClick = onClick)
             .clip(RoundedCornerShape(8.dp))
+            .clickable(enabled = !expired, onClick = onClick)
     )
 }

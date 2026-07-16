@@ -64,8 +64,10 @@ fun SettingsScreen(
 
             item {
                 ListItem(
-                    headlineContent = { Text("Auto-open high-confidence results") },
-                    supportingContent = { Text("Applies saved default-app rules before showing a chooser") },
+                    headlineContent = { Text("Auto-open after high-confidence detect") },
+                    supportingContent = {
+                        Text("When detection is high-confidence, open the file automatically (uses saved default apps if any)")
+                    },
                     trailingContent = {
                         Switch(
                             checked = autoOpen,
@@ -125,7 +127,8 @@ fun SettingsScreen(
             if (defaultAppRules.isEmpty()) {
                 item {
                     Text(
-                        "No rules yet. Open a file with ‘Open As…’, then choose a MIME or extension default.",
+                        "No default-app rules yet. Existing rules can be deleted here. " +
+                            "New rules are not created from the open sheet right now.",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
@@ -246,15 +249,19 @@ fun SettingsScreen(
             onDismissRequest = { showHelpDialog = false },
             title = { Text("Help & Guide") },
             text = {
-                Text("AnyFile Opener is your swiss-army knife for files.\n\n" +
+                Text(
+                    "AnyFile Opener bridges hard-to-open files to the right app.\n\n" +
                         "How to use:\n" +
-                        "1. Pick a file: Tap the center area or use 'System File Manager' for restricted folders.\n" +
-                        "2. Auto-Detect: The app scans the binary header to find the real type.\n" +
-                        "3. Open: Use 'Open Normally' or 'Open as...' to pick a category.\n\n" +
-                        "Pro Tips:\n" +
-                        "• Advanced: Type custom MIMEs like 'text/xml' if the auto-detect isn't specific enough.\n" +
-                        "• Defaults: In 'Open As...', assign an app to the detected MIME or file extension.\n" +
-                        "• Inspect: Use 'INSPECT BINARY' to see if a file is corrupted or to read hidden text headers.")
+                        "1. Pick a file on the home screen, or share/open a file into this app.\n" +
+                        "2. Wait for magic-byte detection (type, confidence, evidence).\n" +
+                        "3. Tap Open, Share, or Open As… (★ Recommended uses the exact detected MIME).\n\n" +
+                        "Tips:\n" +
+                        "• Advanced: type a custom MIME when detection is too broad.\n" +
+                        "• Share: send the file to MT Manager or another app.\n" +
+                        "• Inspect Binary: preview hex/ASCII headers.\n" +
+                        "• Recent items may expire when the source only granted temporary access—remove them with ×.\n" +
+                        "• Default apps listed here can be deleted; creation UI is currently limited."
+                )
             },
             confirmButton = {
                 TextButton(onClick = { showHelpDialog = false }) { Text("Got it") }
