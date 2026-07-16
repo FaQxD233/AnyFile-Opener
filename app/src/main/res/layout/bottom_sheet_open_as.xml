@@ -71,20 +71,16 @@
                 android:textSize="12sp" />
         </LinearLayout>
 
-        <com.google.android.material.button.MaterialButton
+        <ImageButton
             android:id="@+id/btnRecommended"
-            style="@style/Widget.MaterialComponents.Button.UnelevatedButton"
-            android:layout_width="wrap_content"
-            android:layout_height="40dp"
-            android:layout_marginEnd="4dp"
-            android:insetTop="0dp"
-            android:insetBottom="0dp"
-            android:minWidth="0dp"
-            android:paddingHorizontal="12dp"
-            android:text="★ Open"
-            android:textAllCaps="false"
-            android:textSize="13sp"
-            android:enabled="false" />
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:contentDescription="Open with detected type"
+            android:enabled="false"
+            android:padding="12dp"
+            android:src="@drawable/ic_open"
+            app:tint="@color/primary" />
 
         <ImageButton
             android:id="@+id/btnShare"

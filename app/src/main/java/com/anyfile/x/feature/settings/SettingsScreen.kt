@@ -254,7 +254,7 @@ fun SettingsScreen(
                         "How to use:\n" +
                         "1. Pick a file on the home screen, or share/open a file into this app.\n" +
                         "2. Wait for magic-byte detection (type, confidence, evidence).\n" +
-                        "3. Tap Open, Share, or Open As… (★ Open uses the exact detected MIME).\n\n" +
+                        "3. Tap Open, Share, or Open As… (header open icon uses the exact detected MIME).\n\n" +
                         "Tips:\n" +
                         "• Advanced: type a custom MIME when detection is too broad.\n" +
                         "• Share: send the file to MT Manager or another app.\n" +

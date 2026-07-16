@@ -134,7 +134,6 @@ class OpenAsBottomSheet : BottomSheetDialogFragment() {
                 "${detectedResult.confidence.label} confidence • ${detectedResult.source.label}\n${detectedResult.evidence}"
 
             binding.btnRecommended.isEnabled = true
-            binding.btnRecommended.text = "★ Open"
 
             setupDefaultRuleSummary(fileName, detectedResult.mime)
             setupLastAppChip(uri, fileName, detectedResult.mime)
