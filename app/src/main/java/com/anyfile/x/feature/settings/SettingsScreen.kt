@@ -190,7 +190,10 @@ fun SettingsScreen(
                         "Tips:\n" +
                         "• Advanced: type a custom MIME when detection is too broad.\n" +
                         "• Share: send the file to MT Manager or another app.\n" +
-                        "• Inspect Binary: preview hex/ASCII headers.\n" +
+                        "• Save copy: store the file anywhere; a wrong extension is corrected.\n" +
+                        "• Open as <name>: when the extension does not match the content, " +
+                        "forward a copy with the right name to apps that check it.\n" +
+                        "• Inspect: hex or text preview (with encoding choice), checksums, APK details.\n" +
                         "• Recent items may expire when the source only granted temporary access—remove them with ×."
                 )
             },

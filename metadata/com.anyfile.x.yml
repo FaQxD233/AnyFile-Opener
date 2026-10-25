@@ -13,8 +13,10 @@ Description: |-
   file types from bounded header and container inspection, then safely forwards the
   granted content URI to an application selected by the user.
 
-  It also provides a binary inspector, multi-file queue, recent-file shortcuts and
-  user-managed default application rules for MIME types and file extensions.
+  It also flags files whose extension does not match their content, saves copies
+  or forwards them under a corrected name, and provides a hex and text inspector
+  with encoding detection, checksums and APK details, a multi-file queue and
+  recent-file shortcuts.
 
 RepoType: git
 Repo: https://github.com/FaQxD233/AnyFile-Opener.git

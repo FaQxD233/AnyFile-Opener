@@ -21,7 +21,7 @@ Project Gemini represents a complete architectural overhaul and rebranding of th
 
 ### 🛠 Architecture & Tech Stack
 
-- **Core Engine**: Binary-level MIME detection (`MimeDetector`) with confidence, evidence, bounded ZIP inspection, and script heuristics.
+- **Core Engine**: Binary-level MIME detection (`MimeDetector`) with confidence, evidence, ZIP central-directory and OLE2 directory inspection, text encoding detection, and script heuristics.
 - **UI Framework**: Modern hybrid architecture combining **Jetpack Compose** (`LauncherScreen`, `SettingsScreen`) with high-performance **ViewBinding** bottom sheets (`InspectBottomSheet`, `OpenAsBottomSheet`) and lifecycle-aware coroutines (`lifecycleScope.launch(Dispatchers.IO)`).
 - **Intent Routing**: Advanced URI permission bridging (`IntentRouter`) that solves the Android "Access Denied" bottleneck for cross-app file sharing from restricted cache folders.
 - **Build Infrastructure**: A manually triggered GitHub Actions workflow builds and verifies APKs, with optional release-signing secrets and a debug fallback.
@@ -41,12 +41,14 @@ A deep-dive tool into file metadata and structure:
 - **Hex & ASCII Dump**: Real-time paginated viewing (`buildHexDump` & `buildAsciiPreview`) of file headers and raw byte contents.
 - **Header Verification**: Compares magic-byte detection against filesystem metadata.
 - **Share Action**: Forward the inspected file to another app (including file managers like MT) via the system share sheet.
+- **Text Preview**: Decodes the first 64 KB with automatic encoding detection (BOM, UTF-16, UTF-8, GBK/GB18030) and a manual override.
+- **Checksums & APK Info**: MD5/SHA-256 in one pass; package, version, SDK levels and signing certificate fingerprints for APKs.
 
 ### 🗂 Recent Files & Storage Shortcuts
 - **Recent File History**: DataStore-backed storage (`RecentFileStore`) tracking recently analyzed files for quick re-opening.
 - **Home Screen Widget**: A custom Android app widget (`FolderWidgetProvider`) offering one-tap access to system storage roots.
 - **Multi-file Queue**: `ACTION_SEND_MULTIPLE` shares are processed sequentially with open, skip, and cancel controls.
-- **Default App Rules**: Exact MIME rules take priority over extension rules and can be managed from Settings.
+- **Extension Fixes**: Content-based results that contradict the file extension are flagged; files can be saved or forwarded under the corrected name through a FileProvider copy (`FileBridge`).
 
 ---
 
@@ -66,7 +68,8 @@ To ensure long-term reliability and prevent the "messed up" states typical of le
 - **Signature Security**: Release signing is enabled only when all credentials and the actual keystore file are available.
 
 ### 🔒 Signature Locking (Detection Engine)
-- **Bounded Container Verification**: ZIP inspection limits entry count, per-entry bytes, and total decompressed bytes before falling back to header/extension evidence.
+- **Bounded Container Verification**: ZIP inspection reads the central directory without inflating entries; non-seekable sources walk local headers with entry and skip limits before falling back to header/extension evidence.
+- **Time Limits**: Metadata queries stop after 3 s and content detection after 6 s (`FileInspector`), falling back to the file name.
 - **Buffer Integrity**: Initial detection uses a fixed 33KB header buffer; the inspector has a separate 64KB display limit.
 
 ---
@@ -87,10 +90,11 @@ To ensure long-term reliability and prevent the "messed up" states typical of le
 ## 🗺 Roadmap (Gemini Next)
 
 - [x] **Batch Processing**: Sequential handling of shared files with queue controls.
-- [x] **Default App Rules**: Per-MIME and per-extension target application rules.
+- [x] **Extension Fixes**: Mismatch warnings, Save copy, and corrected-name forwarding.
 - [ ] **Custom Detection Rules**: User-definable magic-byte and extension-to-MIME overrides.
 - [x] **Share Action**: Hand files to file managers / other apps via the system share sheet.
 - [x] **Hex & ASCII Inspector**: Native lightweight hex/ASCII preview inside the inspection sheet.
+- [x] **Text Preview & Checksums**: Encoding-aware text preview, MD5/SHA-256, and APK details.
 
 ---
 

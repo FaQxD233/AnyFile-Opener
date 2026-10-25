@@ -9,7 +9,8 @@
 - **Binary Signature Detection**: Identifies files by their magic bytes (headers), not just unreliable extensions.
 - **Robust URI Forwarding**: Ensures target apps (like VLC, MX Player, or Installers) have proper permissions to read files from restricted folders.
 - **Universal Handler**: Registers for `*/*` to provide a fallback when the system is stumped.
-- **Binary Inspector**: View hex/ASCII previews of file headers directly in the app.
+- **Inspector**: Hex/ASCII and text previews (with UTF-8/GBK/UTF-16 detection), MD5/SHA-256 checksums and APK details.
+- **Extension Fixes**: Flags files whose extension does not match their content; save a copy or open them under the corrected name.
 - **Material You & AMOLED**: Personalized themes with dynamic coloring and pure black support.
 - **Recent Files & Widgets**: Quick access to your history and system storage roots.
 
@@ -38,8 +39,8 @@ skipped, or used to cancel the remaining queue.
 Open the app directly to:
 - **Pick a File**: Browse storage and manually select a file to open.
 - **Force MIME**: Manually type a MIME type (e.g., `application/pdf`) to force-open a mislabelled file.
-- **Inspect**: Check the internal header bytes of a file to verify its true type.
-- **Default App Rules**: Save and manage per-MIME or per-extension target apps.
+- **Inspect**: Check the header bytes or text of a file, compute checksums, and read APK details.
+- **Save Copy / Open As**: Store a copy anywhere, or forward one under the corrected file name.
 - **Detection Details**: Review confidence, detection source, and concrete evidence.
 
 ### 3. Home Screen Widget
@@ -70,6 +71,8 @@ The `Build Android` workflow is intentionally manual. Open the repository's
 GitHub Release. Without signing secrets it produces a debug APK. With
 `ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS`, and
 `ANDROID_KEY_PASSWORD`, it produces a signed release APK.
+To build without publishing, for example to verify a change, set
+**Create GitHub Release** to false (`-f create_release=false` with `gh workflow run`).
 
 ---
 
@@ -78,7 +81,8 @@ GitHub Release. Without signing secrets it produces a debug APK. With
 - [x] URI Permission Bridging
 - [x] Deep peeking for ZIP/Office/ISO formats
 - [x] Recent Files History
-- [x] Binary Inspector UI
+- [x] Binary Inspector UI (hex, text with encoding detection, checksums, APK details)
+- [x] Extension mismatch warnings, Save copy and corrected-name forwarding
 - [x] Home Screen Widgets
 - [x] Settings & Themes (Material You, AMOLED)
 

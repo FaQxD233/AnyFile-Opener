@@ -4,8 +4,9 @@ Unlike standard file managers that trust file extensions blindly, AnyFile Opener
 
 Features:
 - Magic-byte MIME detection engine
-- Deep-peeking of ZIP structures (APK, EPUB, DOCX) and script heuristics
+- ZIP container analysis (APK, XAPK/APKM/APKS bundles, EPUB, OpenDocument, Office) and legacy Office files
 - Advanced Intent Routing with robust URI permission bridging
-- Detailed file inspection via deep binary analysis
+- Extension mismatch warnings, "Save copy" and "Open as" with a corrected file name
+- Hex and text inspector with encoding detection (UTF-8, GBK, UTF-16), checksums and APK details
 
 This app respects your privacy: it includes zero proprietary tracking, zero ads, and is completely free and open source.
