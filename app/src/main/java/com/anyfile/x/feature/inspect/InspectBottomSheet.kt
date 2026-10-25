@@ -13,6 +13,7 @@ import com.anyfile.x.databinding.BottomSheetInspectBinding
 import com.anyfile.x.engine.MimeDetector
 import com.anyfile.x.engine.utils.ByteReader
 import com.anyfile.x.routing.IntentRouter
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -80,19 +81,18 @@ class InspectBottomSheet : BottomSheetDialogFragment() {
             updateDumpUI()
             if (!loaded) showEndOfFile()
 
-            // Show MIME Detector's header-based detection result
+            // Same full detection as the open sheet, kept off the main thread.
             try {
-                val result = MimeDetector.detectFromHeader(
-                    fullByteArray,
-                    fileName ?: "",
-                    contentResolver = resolver,
-                    uri = uri
-                )
+                val result = withContext(Dispatchers.IO) {
+                    MimeDetector.detect(resolver, uri, fileName)
+                }
                 binding.headerDetectionLabel.visibility = View.VISIBLE
                 binding.headerDetectionLabel.text =
                     "${result.confidence.label} confidence • ${result.source.label}\n${result.evidence}"
                 binding.inspectMimeText.text = result.mime
                 detectedMime = result.mime
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 binding.inspectMimeText.text = "detection failed"
             }

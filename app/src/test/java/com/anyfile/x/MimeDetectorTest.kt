@@ -4,6 +4,7 @@ import com.anyfile.x.engine.MimeDetector
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.nio.charset.Charset
 
 class MimeDetectorTest {
 
@@ -121,9 +122,136 @@ class MimeDetectorTest {
         assertEquals(MimeDetector.DetectionSource.FILE_EXTENSION, extension.source)
     }
 
+    @Test
+    fun textWithByteOrderMarkIsNotAudio() {
+        val utf16 = MimeDetector.detectFromHeader("﻿Hello, world".toByteArray(Charsets.UTF_16LE))
+        assertEquals("text/plain", utf16.mime)
+        assertEquals(MimeDetector.FileType.TEXT, utf16.fileType)
+
+        val utf32 = "﻿Hi there".toByteArray(Charset.forName("UTF-32LE"))
+        assertEquals("text/plain", MimeDetector.detectFromHeader(utf32).mime)
+    }
+
+    @Test
+    fun validatesMpegAudioFrameFields() {
+        assertMime(bytes(0xFF, 0xFB, 0x90, 0x64), "audio/mpeg")
+        // Reserved sample-rate index: frame sync alone is not enough.
+        val invalid = MimeDetector.detectFromHeader(bytes(0xFF, 0xFB, 0x9C, 0x00, 0x01))
+        assertEquals(MimeDetector.FileType.UNKNOWN, invalid.fileType)
+    }
+
+    @Test
+    fun rtfIsNotJson() {
+        assertMime("{\\rtf1\\ansi\\deff0 Hello}".toByteArray(), "application/rtf")
+    }
+
+    @Test
+    fun detectsAdditionalBinarySignatures() {
+        assertMime("MThd\u0000\u0000\u0000\u0006".toByteArray(Charsets.ISO_8859_1), "audio/midi")
+        assertMime("#!AMR\n".toByteArray(), "audio/amr")
+        assertMime("#!AMR-WB\n".toByteArray(), "audio/amr-wb")
+        assertMime(asciiAt(12, 0 to "FORM", 8 to "AIFF"), "audio/x-aiff")
+        assertMime("MAC \u0096\u000F".toByteArray(Charsets.ISO_8859_1), "audio/x-ape")
+        assertMime("SQLite format 3\u0000".toByteArray(), "application/x-sqlite3")
+        assertMime("ITSF\u0003\u0000".toByteArray(Charsets.ISO_8859_1), "application/x-chm")
+        assertMime(asciiAt(80, 60 to "BOOKMOBI"), "application/x-mobipocket-ebook")
+        assertMime(bytes(0x00, 0x00, 0x01, 0xBA, 0x44), "video/mpeg")
+        assertMime(transportStream(), "video/mp2t")
+        assertMime(
+            "d8:announce30:udp://tracker.example:80/annc4:infod6:lengthi1ee".toByteArray(),
+            "application/x-bittorrent"
+        )
+    }
+
+    @Test
+    fun asfUsesExtensionToSeparateAudio() {
+        val asf = bytes(
+            0x30, 0x26, 0xB2, 0x75, 0x8E, 0x66, 0xCF, 0x11,
+            0xA6, 0xD9, 0x00, 0xAA, 0x00, 0x62, 0xCE, 0x6C
+        )
+        assertEquals("video/x-ms-wmv", MimeDetector.detectFromHeader(asf).mime)
+        assertEquals("audio/x-ms-wma", MimeDetector.detectFromHeader(asf, "song.wma").mime)
+    }
+
+    @Test
+    fun detectsTextSignatures() {
+        assertMime("BEGIN:VCARD\r\nVERSION:3.0\r\nEND:VCARD".toByteArray(), "text/x-vcard")
+        assertMime("BEGIN:VCALENDAR\r\nVERSION:2.0\r\nEND:VCALENDAR".toByteArray(), "text/calendar")
+        assertMime("#EXTM3U\n#EXTINF:123,Song\nsong.mp3".toByteArray(), "audio/x-mpegurl")
+        assertMime(
+            "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:10".toByteArray(),
+            "application/vnd.apple.mpegurl"
+        )
+    }
+
+    @Test
+    fun detectsSvgAndNonAsciiText() {
+        val svg = "<?xml version=\"1.0\"?>\n<svg xmlns=\"http://www.w3.org/2000/svg\"/>"
+        val svgResult = MimeDetector.detectFromHeader(svg.toByteArray())
+        assertEquals("image/svg+xml", svgResult.mime)
+        assertEquals(MimeDetector.FileType.IMAGE, svgResult.fileType)
+
+        val chinese = "这是一个中文文本文件。"
+        assertEquals("text/plain", MimeDetector.detectFromHeader(chinese.toByteArray()).mime)
+        assertEquals(
+            "text/plain",
+            MimeDetector.detectFromHeader(chinese.toByteArray(Charset.forName("GBK"))).mime
+        )
+    }
+
+    @Test
+    fun providerTypeIsUsedOnlyWhenSpecific() {
+        val binary = bytes(0x01, 0x02, 0x03, 0x04, 0x05, 0x06)
+        val provider = MimeDetector.detectFromHeader(binary, providerMime = "application/x-foo")
+        assertEquals("application/x-foo", provider.mime)
+        assertEquals(MimeDetector.DetectionSource.PROVIDER, provider.source)
+
+        val generic = MimeDetector.detectFromHeader(binary, providerMime = "application/octet-stream")
+        assertEquals(MimeDetector.DetectionSource.FALLBACK, generic.source)
+    }
+
+    @Test
+    fun identifiesOle2DocumentsByDirectoryEntry() {
+        val header = ByteArray(1024)
+        ole2Signature().copyInto(header)
+        header[0x1E] = 9
+        val name = "WordDocument".toByteArray(Charsets.UTF_16LE)
+        name.copyInto(header, 640)
+        header[640 + 64] = (name.size + 2).toByte()
+        val word = MimeDetector.detectFromHeader(header)
+        assertEquals("application/msword", word.mime)
+        assertEquals(MimeDetector.DetectionConfidence.HIGH, word.confidence)
+
+        // The same name away from a 128-byte entry boundary is document text, not a stream.
+        val shifted = ByteArray(1024)
+        ole2Signature().copyInto(shifted)
+        name.copyInto(shifted, 650)
+        assertEquals("application/x-ole-storage", MimeDetector.detectFromHeader(shifted).mime)
+
+        val bare = ByteArray(512)
+        ole2Signature().copyInto(bare)
+        assertEquals("application/vnd.ms-excel", MimeDetector.detectFromHeader(bare, "sheet.xls").mime)
+    }
+
     private fun assertMime(header: ByteArray, expectedMime: String) {
         val result = MimeDetector.detectFromHeader(header)
         assertEquals(expectedMime, result.mime)
+    }
+
+    private fun bytes(vararg values: Int): ByteArray = ByteArray(values.size) { values[it].toByte() }
+
+    private fun ole2Signature(): ByteArray = bytes(0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1)
+
+    private fun asciiAt(size: Int, vararg parts: Pair<Int, String>): ByteArray {
+        val header = ByteArray(size)
+        for ((offset, text) in parts) text.toByteArray(Charsets.US_ASCII).copyInto(header, offset)
+        return header
+    }
+
+    private fun transportStream(): ByteArray {
+        val stream = ByteArray(600)
+        for (packet in 0..3) stream[packet * 188] = 0x47
+        return stream
     }
 
     private fun createFtypHeader(brand: String): ByteArray {

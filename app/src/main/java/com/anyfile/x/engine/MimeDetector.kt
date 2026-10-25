@@ -2,29 +2,45 @@ package com.anyfile.x.engine
 
 import android.content.ContentResolver
 import android.net.Uri
-import android.webkit.MimeTypeMap
 import com.anyfile.x.engine.utils.ByteReader
-import java.io.ByteArrayOutputStream
+import com.anyfile.x.engine.utils.ByteSearch
 import java.util.Locale
-import java.util.zip.ZipInputStream
 
 /** Magic-byte MIME detector with bounded container inspection. */
 object MimeDetector {
 
-    private const val ALL_MIME = "*/*"
-    private const val ZIP_ENTRY_LIMIT = 12
-    private const val ZIP_ENTRY_BYTE_LIMIT = 64 * 1024
-    private const val ZIP_TOTAL_BYTE_LIMIT = 256 * 1024
+    private const val ALL_MIME = MimeTypes.ANY
+    private const val HEADER_BYTES = 33_000
+    private const val TEXT_SAMPLE_BYTES = 2048
+    private val PDF_MARKER = "%PDF-".toByteArray(Charsets.US_ASCII)
+    private val TORRENT_INFO = "4:infod".toByteArray(Charsets.US_ASCII)
+    private val ASF_HEADER = intArrayOf(
+        0x30, 0x26, 0xB2, 0x75, 0x8E, 0x66, 0xCF, 0x11,
+        0xA6, 0xD9, 0x00, 0xAA, 0x00, 0x62, 0xCE, 0x6C
+    )
+    private val YAML_LINE = Regex("""(?m)^\w+:\s+.+""")
+
+    /** Types a source app reports when it knows nothing about the content. */
+    private val GENERIC_PROVIDER_MIMES = setOf(
+        MimeTypes.ANY,
+        MimeTypes.OCTET_STREAM,
+        "binary/octet-stream",
+        "application/unknown",
+        "application/force-download",
+        "text/plain",
+        MimeTypes.ZIP,
+        "application/x-zip-compressed"
+    )
 
     enum class FileType(val label: String, val emoji: String, val category: String) {
-        VIDEO("Video", "\uD83C\uDFAC", "video"),
-        AUDIO("Audio", "\uD83C\uDFB5", "audio"),
-        IMAGE("Image", "\uD83D\uDDBC", "image"),
-        DOCUMENT("Document", "\uD83D\uDCC4", "document"),
-        ARCHIVE("Archive", "\uD83D\uDCE6", "archive"),
-        APK("APK", "\u2699", "apk"),
-        TEXT("Text", "\uD83D\uDCC3", "text"),
-        FONT("Font", "\uD83D\uDD24", "font"),
+        VIDEO("Video", "🎬", "video"),
+        AUDIO("Audio", "🎵", "audio"),
+        IMAGE("Image", "🖼", "image"),
+        DOCUMENT("Document", "📄", "document"),
+        ARCHIVE("Archive", "📦", "archive"),
+        APK("APK", "⚙", "apk"),
+        TEXT("Text", "📃", "text"),
+        FONT("Font", "🔤", "font"),
         UNKNOWN("Unknown", "?", "any")
     }
 
@@ -38,6 +54,7 @@ object MimeDetector {
         MAGIC_BYTES("Magic bytes"),
         CONTAINER_CONTENT("Container content"),
         FILE_EXTENSION("File extension"),
+        PROVIDER("Source app type"),
         TEXT_HEURISTIC("Text heuristic"),
         USER_OVERRIDE("Saved value"),
         FALLBACK("Fallback")
@@ -57,10 +74,10 @@ object MimeDetector {
         "image" -> "image/*"
         "font" -> "font/*"
         "document" -> "application/*"
-        "archive" -> "application/zip"
-        "apk" -> "application/vnd.android.package-archive"
+        "archive" -> MimeTypes.ZIP
+        "apk" -> MimeTypes.APK
         "text" -> "text/plain"
-        else -> fallback.substringBefore(';').trim().ifBlank { ALL_MIME }
+        else -> MimeTypes.normalize(fallback)
     }
 
     fun detect(
@@ -70,89 +87,134 @@ object MimeDetector {
         fallbackMime: String = ALL_MIME
     ): DetectionResult {
         // ISO9660 uses a signature at byte 32769; all ordinary detection stays bounded.
-        val header = ByteReader.readHeader(contentResolver, uri, 33_000)
-        return detectFromHeader(
-            header,
-            fileName?.lowercase(Locale.ROOT).orEmpty(),
-            fallbackMime,
-            contentResolver,
-            uri
-        )
+        val header = ByteReader.readHeader(contentResolver, uri, HEADER_BYTES)
+        val providerMime = try {
+            contentResolver.getType(uri)
+        } catch (_: Exception) {
+            null
+        }
+        return ContentContainerAccess(contentResolver, uri).use { access ->
+            detectFromHeader(header, fileName.orEmpty(), fallbackMime, providerMime, access)
+        }
     }
+
+    /** Detection from the file name alone, for content that could not be read in time. */
+    fun detectFromName(fileName: String?, fallbackMime: String = ALL_MIME): DetectionResult =
+        extensionFallback(fileName.orEmpty().lowercase(Locale.ROOT), ByteArray(0), fallbackMime, null)
 
     fun detectFromHeader(
         header: ByteArray,
         name: String = "",
         fallbackMime: String = ALL_MIME,
-        contentResolver: ContentResolver? = null,
-        uri: Uri? = null
+        providerMime: String? = null,
+        access: ContainerAccess? = null
     ): DetectionResult {
+        val lowerName = name.lowercase(Locale.ROOT)
         if (header.isEmpty()) {
-            return extensionFallback(name, header, fallbackMime)
+            return extensionFallback(lowerName, header, fallbackMime, providerMime)
         }
 
-        val pdfOffset = indexOfBytes(header, "%PDF-".toByteArray(), 1024)
+        val extension = MimeTypes.extensionOf(lowerName)
+        val pdfOffset = ByteSearch.indexOf(header, PDF_MARKER, maxOffset = 1024)
         return when {
+            // A text byte-order mark comes first: FF FE also looks like an MPEG frame sync.
+            TextEncoding.bomLength(header) > 0 -> bomText(header, lowerName)
+
             // Video containers
-            matchBytes(header, 0x1A, 0x45, 0xDF, 0xA3) -> handleEbml(header, name)
-            header.size >= 12 && matchBytesAt(header, 4, 0x66, 0x74, 0x79, 0x70) ->
-                handleFtyp(header)
-            matchBytes(header, 0x52, 0x49, 0x46, 0x46) &&
-                matchBytesAt(header, 8, 0x41, 0x56, 0x49, 0x20) ->
+            matchBytes(header, 0x1A, 0x45, 0xDF, 0xA3) -> handleEbml(header, lowerName)
+            ascii(header, 4, "ftyp") && header.size >= 12 -> handleFtyp(header)
+            ascii(header, 0, "RIFF") && ascii(header, 8, "AVI ") ->
                 magic(FileType.VIDEO, "video/x-msvideo", "RIFF/AVI signature")
-            matchBytes(header, 0x46, 0x4C, 0x56) ->
+            ascii(header, 0, "FLV") ->
                 magic(FileType.VIDEO, "video/x-flv", "FLV signature")
+            matchBytes(header, *ASF_HEADER) -> handleAsf(extension)
+            matchBytes(header, 0x00, 0x00, 0x01, 0xBA) ->
+                magic(FileType.VIDEO, "video/mpeg", "MPEG program stream pack header")
+            matchBytes(header, 0x00, 0x00, 0x01, 0xB3) ->
+                magic(FileType.VIDEO, "video/mpeg", "MPEG video sequence header")
 
             // Audio
-            matchBytes(header, 0x49, 0x44, 0x33) ->
+            ascii(header, 0, "ID3") ->
                 magic(FileType.AUDIO, "audio/mpeg", "ID3 tag")
             isAacAdts(header) ->
                 magic(FileType.AUDIO, "audio/aac", "AAC ADTS sync word")
             isMpegAudioFrame(header) ->
-                magic(FileType.AUDIO, "audio/mpeg", "MPEG audio frame sync")
-            matchBytes(header, 0x66, 0x4C, 0x61, 0x43) ->
+                magic(FileType.AUDIO, "audio/mpeg", "MPEG audio frame header")
+            ascii(header, 0, "fLaC") ->
                 magic(FileType.AUDIO, "audio/flac", "fLaC signature")
-            matchBytes(header, 0x4F, 0x67, 0x67, 0x53) -> handleOgg(header)
-            matchBytes(header, 0x52, 0x49, 0x46, 0x46) &&
-                matchBytesAt(header, 8, 0x57, 0x41, 0x56, 0x45) ->
+            ascii(header, 0, "OggS") -> handleOgg(header)
+            ascii(header, 0, "RIFF") && ascii(header, 8, "WAVE") ->
                 magic(FileType.AUDIO, "audio/wav", "RIFF/WAVE signature")
+            ascii(header, 0, "#!AMR-WB\n") ->
+                magic(FileType.AUDIO, "audio/amr-wb", "AMR-WB header")
+            ascii(header, 0, "#!AMR\n") ->
+                magic(FileType.AUDIO, "audio/amr", "AMR header")
+            ascii(header, 0, "MThd") ->
+                magic(FileType.AUDIO, "audio/midi", "MIDI header chunk")
+            ascii(header, 0, "FORM") &&
+                (ascii(header, 8, "AIFF") || ascii(header, 8, "AIFC")) ->
+                magic(FileType.AUDIO, "audio/x-aiff", "IFF/AIFF signature")
+            ascii(header, 0, "MAC ") ->
+                magic(FileType.AUDIO, "audio/x-ape", "Monkey's Audio signature")
+
+            // E-books mark offset 60, so check before short image signatures such as BM.
+            ascii(header, 60, "BOOKMOBI") ->
+                magic(FileType.DOCUMENT, MimeTypes.MOBI, "BOOKMOBI marker at offset 60")
 
             // Images
             matchBytes(header, 0xFF, 0xD8, 0xFF) ->
                 magic(FileType.IMAGE, "image/jpeg", "JPEG start-of-image marker")
             matchBytes(header, 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A) ->
                 magic(FileType.IMAGE, "image/png", "PNG signature")
-            matchBytes(header, 0x47, 0x49, 0x46, 0x38) ->
+            ascii(header, 0, "GIF8") ->
                 magic(FileType.IMAGE, "image/gif", "GIF87a/GIF89a prefix")
-            matchBytes(header, 0x52, 0x49, 0x46, 0x46) &&
-                matchBytesAt(header, 8, 0x57, 0x45, 0x42, 0x50) ->
+            ascii(header, 0, "RIFF") && ascii(header, 8, "WEBP") ->
                 magic(FileType.IMAGE, "image/webp", "RIFF/WEBP signature")
-            matchBytes(header, 0x42, 0x4D) ->
+            ascii(header, 0, "BM") ->
                 magic(FileType.IMAGE, "image/bmp", "BM signature")
             matchBytes(header, 0x49, 0x49, 0x2A, 0x00) ||
                 matchBytes(header, 0x4D, 0x4D, 0x00, 0x2A) ->
                 magic(FileType.IMAGE, "image/tiff", "TIFF byte-order signature")
 
+            // Transport streams start with 0x47 ('G'), so they come after GIF.
+            isMpegTransportStream(header) ->
+                magic(FileType.VIDEO, "video/mp2t", "MPEG transport stream sync bytes")
+
             // Documents
             pdfOffset >= 0 ->
                 magic(FileType.DOCUMENT, "application/pdf", "%PDF- at offset $pdfOffset")
+            ascii(header, 0, "{\\rtf") ->
+                magic(FileType.DOCUMENT, "application/rtf", "{\\rtf signature")
+            Ole2Inspector.matches(header) -> Ole2Inspector.inspect(header, extension, access)
+            ascii(header, 0, "ITSF") ->
+                magic(FileType.DOCUMENT, MimeTypes.CHM, "ITSF (CHM) signature")
 
             // Fonts
             matchBytes(header, 0x00, 0x01, 0x00, 0x00) ->
                 magic(FileType.FONT, "font/ttf", "TrueType sfnt signature")
-            matchBytes(header, 0x4F, 0x54, 0x54, 0x4F) ->
+            ascii(header, 0, "OTTO") ->
                 magic(FileType.FONT, "font/otf", "OpenType OTTO signature")
-            matchBytes(header, 0x77, 0x4F, 0x46, 0x46) ->
+            ascii(header, 0, "wOFF") ->
                 magic(FileType.FONT, "font/woff", "WOFF signature")
-            matchBytes(header, 0x77, 0x4F, 0x46, 0x32) ->
+            ascii(header, 0, "wOF2") ->
                 magic(FileType.FONT, "font/woff2", "WOFF2 signature")
+
+            // Data files
+            ascii(header, 0, "SQLite format 3\u0000") ->
+                magic(FileType.UNKNOWN, "application/x-sqlite3", "SQLite 3 header")
+            isTorrent(header) ->
+                magic(
+                    FileType.UNKNOWN,
+                    "application/x-bittorrent",
+                    "Bencoded dictionary with an info section"
+                )
 
             // ZIP and ZIP-based formats, including empty/spanned archives.
             matchBytes(header, 0x50, 0x4B, 0x03, 0x04) ->
-                handleZipBased(header, name, contentResolver, uri)
+                ZipInspector.inspect(header, extension, access)
             matchBytes(header, 0x50, 0x4B, 0x05, 0x06) ||
                 matchBytes(header, 0x50, 0x4B, 0x07, 0x08) ->
-                magic(FileType.ARCHIVE, "application/zip", "ZIP end/spanned signature")
+                magic(FileType.ARCHIVE, MimeTypes.ZIP, "ZIP end/spanned signature")
 
             // Other archives
             matchBytes(header, 0x52, 0x61, 0x72, 0x21, 0x1A, 0x07) ->
@@ -163,15 +225,15 @@ object MimeDetector {
                 magic(FileType.ARCHIVE, "application/gzip", "GZIP signature")
             matchBytes(header, 0xFD, 0x37, 0x7A, 0x58, 0x5A, 0x00) ->
                 magic(FileType.ARCHIVE, "application/x-xz", "XZ signature")
-            matchBytes(header, 0x42, 0x5A, 0x68) ->
+            ascii(header, 0, "BZh") ->
                 magic(FileType.ARCHIVE, "application/x-bzip2", "BZip2 signature")
-            header.size >= 262 && matchBytesAt(header, 257, 0x75, 0x73, 0x74, 0x61, 0x72) ->
+            ascii(header, 257, "ustar") ->
                 magic(FileType.ARCHIVE, "application/x-tar", "ustar marker at offset 257")
-            header.size >= 32774 &&
-                matchBytesAt(header, 32769, 0x43, 0x44, 0x30, 0x30, 0x31) ->
+            ascii(header, 32769, "CD001") ->
                 magic(FileType.ARCHIVE, "application/x-iso9660-image", "ISO9660 CD001 marker")
 
-            else -> extensionFallback(name, header, fallbackMime)
+            else -> textSignature(header)
+                ?: extensionFallback(lowerName, header, fallbackMime, providerMime)
         }
     }
 
@@ -233,216 +295,84 @@ object MimeDetector {
         return magic(type, mime, "ISO BMFF ftyp brand '${brand.trim()}'")
     }
 
-    private fun handleZipBased(
-        header: ByteArray,
-        name: String,
-        contentResolver: ContentResolver?,
-        uri: Uri?
-    ): DetectionResult {
-        if (contentResolver != null && uri != null) {
-            verifyZipContent(contentResolver, uri)?.let { return it }
-        }
-
-        val headerText = String(header, Charsets.ISO_8859_1)
-        val hasContentTypes = headerText.contains("[Content_Types].xml")
-        return when {
-            headerText.contains("AndroidManifest.xml") &&
-                (headerText.contains("classes.dex") || headerText.contains("resources.arsc")) ->
-                result(
-                    FileType.APK,
-                    "application/vnd.android.package-archive",
-                    DetectionConfidence.MEDIUM,
-                    DetectionSource.CONTAINER_CONTENT,
-                    "APK marker names found in the bounded ZIP header"
-                )
-            headerText.contains("mimetype") && name.endsWith(".epub") ->
-                result(
-                    FileType.DOCUMENT,
-                    "application/epub+zip",
-                    DetectionConfidence.MEDIUM,
-                    DetectionSource.CONTAINER_CONTENT,
-                    "EPUB mimetype entry name plus .epub extension"
-                )
-            hasContentTypes -> officeByName(name, DetectionSource.CONTAINER_CONTENT)
-            name.endsWith(".apk") -> extensionResult(
-                FileType.APK,
-                "application/vnd.android.package-archive",
-                "Extension .apk on a ZIP container",
-                DetectionConfidence.MEDIUM
-            )
-            name.endsWith(".epub") -> extensionResult(
-                FileType.DOCUMENT,
-                "application/epub+zip",
-                "Extension .epub on a ZIP container",
-                DetectionConfidence.MEDIUM
-            )
-            name.endsWith(".docx") || name.endsWith(".xlsx") || name.endsWith(".pptx") ->
-                officeByName(name, DetectionSource.FILE_EXTENSION)
-            else -> magic(FileType.ARCHIVE, "application/zip", "ZIP local-file signature")
-        }
-    }
-
-    /**
-     * Reads only a small number of small entries. If advancing would require
-     * decompressing a large entry, inspection stops and detection falls back to the
-     * already-bounded header/extension path.
-     */
-    private fun verifyZipContent(
-        contentResolver: ContentResolver,
-        uri: Uri
-    ): DetectionResult? = try {
-        contentResolver.openInputStream(uri)?.use { input ->
-            ZipInputStream(input.buffered()).use { zip ->
-                var entryCount = 0
-                var totalRead = 0
-                var foundManifest = false
-
-                while (entryCount < ZIP_ENTRY_LIMIT && totalRead <= ZIP_TOTAL_BYTE_LIMIT) {
-                    val entry = zip.nextEntry ?: break
-                    val entryName = entry.name.replace('\\', '/')
-
-                    if (entryName == "AndroidManifest.xml") {
-                        foundManifest = true
-                    }
-                    if (foundManifest &&
-                        (entryName == "classes.dex" || entryName == "resources.arsc")
-                    ) {
-                        return result(
-                            FileType.APK,
-                            "application/vnd.android.package-archive",
-                            DetectionConfidence.HIGH,
-                            DetectionSource.CONTAINER_CONTENT,
-                            "ZIP contains AndroidManifest.xml and $entryName"
-                        )
-                    }
-
-                    val bytes = readZipEntryBounded(zip, ZIP_ENTRY_BYTE_LIMIT) ?: return null
-                    totalRead += bytes.size
-                    when (entryName) {
-                        "mimetype" -> {
-                            val value = bytes.toString(Charsets.US_ASCII).trim()
-                            if (value == "application/epub+zip") {
-                                return result(
-                                    FileType.DOCUMENT,
-                                    "application/epub+zip",
-                                    DetectionConfidence.HIGH,
-                                    DetectionSource.CONTAINER_CONTENT,
-                                    "ZIP mimetype entry contains application/epub+zip"
-                                )
-                            }
-                        }
-                        "[Content_Types].xml" -> {
-                            val xml = bytes.toString(Charsets.UTF_8).lowercase(Locale.ROOT)
-                            val office = when {
-                                xml.contains("wordprocessingml") ->
-                                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-                                xml.contains("spreadsheetml") ->
-                                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                                xml.contains("presentationml") ->
-                                    "application/vnd.openxmlformats-officedocument.presentationml.presentation"
-                                else -> null
-                            }
-                            if (office != null) {
-                                return result(
-                                    FileType.DOCUMENT,
-                                    office,
-                                    DetectionConfidence.HIGH,
-                                    DetectionSource.CONTAINER_CONTENT,
-                                    "Office family identified from [Content_Types].xml"
-                                )
-                            }
-                        }
-                    }
-                    entryCount++
-                }
-                null
-            }
-        }
-    } catch (_: Exception) {
-        null
-    }
-
-    private fun readZipEntryBounded(zip: ZipInputStream, limit: Int): ByteArray? {
-        val output = ByteArrayOutputStream(minOf(limit, 8192))
-        val buffer = ByteArray(4096)
-        var total = 0
-        while (true) {
-            val read = zip.read(buffer)
-            if (read < 0) return output.toByteArray()
-            if (read == 0) continue
-            total += read
-            if (total > limit) return null
-            output.write(buffer, 0, read)
-        }
-    }
-
-    private fun officeByName(name: String, source: DetectionSource): DetectionResult {
-        val (mime, detail) = when {
-            name.endsWith(".docx") ->
-                "application/vnd.openxmlformats-officedocument.wordprocessingml.document" to "DOCX"
-            name.endsWith(".xlsx") ->
-                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" to "XLSX"
-            name.endsWith(".pptx") ->
-                "application/vnd.openxmlformats-officedocument.presentationml.presentation" to "PPTX"
-            else -> "application/zip" to "generic OpenXML ZIP"
-        }
-        val confidence = if (source == DetectionSource.CONTAINER_CONTENT && mime != "application/zip") {
-            DetectionConfidence.HIGH
+    /** ASF holds both WMV and WMA; only the extension tells them apart cheaply. */
+    private fun handleAsf(extension: String): DetectionResult =
+        if (extension == "wma") {
+            magic(FileType.AUDIO, "audio/x-ms-wma", "ASF header object plus .wma extension")
         } else {
-            DetectionConfidence.MEDIUM
+            magic(FileType.VIDEO, "video/x-ms-wmv", "ASF header object")
         }
+
+    /** Text with a byte-order mark. The extension may refine the text subtype only. */
+    private fun bomText(header: ByteArray, name: String): DetectionResult {
+        val encoding = TextEncoding.detect(header)
+        val extension = MimeTypes.extensionOf(name)
+        val extensionMime = MimeTypes.mimeForExtension(extension)
+        if (extensionMime != null && MimeTypes.fileTypeFor(extensionMime) == FileType.TEXT) {
+            return result(
+                FileType.TEXT,
+                extensionMime,
+                DetectionConfidence.MEDIUM,
+                DetectionSource.TEXT_HEURISTIC,
+                "${encoding.label} byte-order mark plus .$extension extension"
+            )
+        }
+        val sample = textSample(header, encoding)
+        textSignature(sample)?.let { return it }
+        val mime = structuredTextMime(sample) ?: "text/plain"
         return result(
-            if (mime == "application/zip") FileType.ARCHIVE else FileType.DOCUMENT,
+            MimeTypes.fileTypeFor(mime),
             mime,
-            confidence,
-            source,
-            "$detail inferred from ZIP markers and file name"
+            DetectionConfidence.MEDIUM,
+            DetectionSource.TEXT_HEURISTIC,
+            "${encoding.label} byte-order mark"
         )
     }
 
     private fun extensionFallback(
         name: String,
-        header: ByteArray = ByteArray(0),
-        fallbackMime: String = ALL_MIME
+        header: ByteArray,
+        fallbackMime: String,
+        providerMime: String?
     ): DetectionResult {
-        val extension = name.substringAfterLast('.', "").lowercase(Locale.ROOT)
-        when (extension) {
-            "apk" -> return extensionResult(
-                FileType.APK,
-                "application/vnd.android.package-archive",
-                "Extension .apk"
-            )
-            "md" -> return extensionResult(FileType.TEXT, "text/markdown", "Extension .md")
-            "json" -> return extensionResult(FileType.TEXT, "application/json", "Extension .json")
+        val extension = MimeTypes.extensionOf(name)
+        MimeTypes.known(extension)?.let { known ->
+            return extensionResult(known.fileType, known.mime, "Known extension .$extension")
         }
 
-        val systemMime = MimeTypeMap.getSingleton().getMimeTypeFromExtension(extension)
+        val systemMime = MimeTypes.systemMimeFor(extension)
         if (systemMime != null) {
-            val type = fileTypeForMime(systemMime)
+            val type = MimeTypes.fileTypeFor(systemMime)
             if (type != FileType.UNKNOWN) {
                 return extensionResult(type, systemMime, "Android MIME map for .$extension")
             }
         }
 
+        providerResult(providerMime)?.let { return it }
+
         if (header.isNotEmpty()) {
             detectScript(header, name)?.let { return it }
-            if (isLikelyText(header)) {
-                val structuredMime = detectStructuredText(header) ?: "text/plain"
-                val charset = getCharsetName(header)
+            if (TextEncoding.looksLikeText(header)) {
+                val encoding = TextEncoding.detect(header)
+                val mime = structuredTextMime(textSample(header, encoding)) ?: "text/plain"
                 return result(
-                    FileType.TEXT,
-                    structuredMime,
+                    MimeTypes.fileTypeFor(mime),
+                    mime,
                     DetectionConfidence.MEDIUM,
                     DetectionSource.TEXT_HEURISTIC,
-                    "Printable-text ratio and structure; probable charset $charset"
+                    "Text structure; encoding ${encoding.label}"
                 )
             }
         }
 
-        val normalizedFallback = fallbackMime.substringBefore(';').trim().ifBlank { ALL_MIME }
+        // A specific type outside the known categories still beats the generic fallback.
+        if (systemMime != null) {
+            return extensionResult(FileType.UNKNOWN, systemMime, "Android MIME map for .$extension")
+        }
+
         return result(
             FileType.UNKNOWN,
-            normalizedFallback,
+            MimeTypes.normalize(fallbackMime),
             DetectionConfidence.LOW,
             DetectionSource.FALLBACK,
             if (extension.isBlank()) {
@@ -453,20 +383,46 @@ object MimeDetector {
         )
     }
 
-    private fun fileTypeForMime(mime: String): FileType = when {
-        mime == "application/vnd.android.package-archive" -> FileType.APK
-        mime.startsWith("video/") -> FileType.VIDEO
-        mime.startsWith("audio/") -> FileType.AUDIO
-        mime.startsWith("image/") -> FileType.IMAGE
-        mime.startsWith("font/") -> FileType.FONT
-        mime.startsWith("text/") || mime.contains("json") || mime.contains("xml") ||
-            mime.contains("javascript") -> FileType.TEXT
-        mime == "application/pdf" || mime.contains("document") || mime.contains("sheet") ||
-            mime.contains("presentation") || mime == "application/rtf" ||
-            mime == "application/epub+zip" -> FileType.DOCUMENT
-        mime.contains("zip") || mime.contains("archive") || mime.contains("tar") ||
-            mime.contains("rar") || mime.contains("7z") || mime.contains("gzip") -> FileType.ARCHIVE
-        else -> FileType.UNKNOWN
+    private fun providerResult(providerMime: String?): DetectionResult? {
+        val mime = MimeTypes.normalize(providerMime ?: return null)
+        if (mime in GENERIC_PROVIDER_MIMES || mime.endsWith("/*") || !MimeTypes.isValid(mime)) {
+            return null
+        }
+        return result(
+            MimeTypes.fileTypeFor(mime),
+            mime,
+            DetectionConfidence.LOW,
+            DetectionSource.PROVIDER,
+            "Type reported by the source app"
+        )
+    }
+
+    private fun textSample(header: ByteArray, encoding: TextEncoding.Detection): String =
+        TextEncoding.decode(
+            header,
+            encoding.charset,
+            encoding.bomLength,
+            minOf(header.size - encoding.bomLength, TEXT_SAMPLE_BYTES),
+            endOfInput = false
+        )
+
+    private fun textSignature(header: ByteArray): DetectionResult? =
+        textSignature(String(header, 0, minOf(header.size, TEXT_SAMPLE_BYTES), Charsets.ISO_8859_1))
+
+    /** Text formats whose first line identifies them regardless of the file name. */
+    private fun textSignature(text: String): DetectionResult? {
+        val content = text.trimStart()
+        return when {
+            content.startsWith("BEGIN:VCARD", ignoreCase = true) ->
+                textMatch(FileType.TEXT, "text/x-vcard", "BEGIN:VCARD header")
+            content.startsWith("BEGIN:VCALENDAR", ignoreCase = true) ->
+                textMatch(FileType.TEXT, "text/calendar", "BEGIN:VCALENDAR header")
+            content.startsWith("#EXTM3U") && content.contains("#EXT-X-") ->
+                textMatch(FileType.VIDEO, MimeTypes.HLS, "#EXTM3U playlist with HLS tags")
+            content.startsWith("#EXTM3U") ->
+                textMatch(FileType.AUDIO, "audio/x-mpegurl", "#EXTM3U playlist header")
+            else -> null
+        }
     }
 
     private fun detectScript(header: ByteArray, name: String): DetectionResult? {
@@ -501,44 +457,38 @@ object MimeDetector {
         }
     }
 
-    private fun detectStructuredText(header: ByteArray): String? {
-        val charset = when {
-            header.size >= 3 && matchBytes(header, 0xEF, 0xBB, 0xBF) -> Charsets.UTF_8
-            header.size >= 2 && matchBytes(header, 0xFF, 0xFE) -> Charsets.UTF_16LE
-            header.size >= 2 && matchBytes(header, 0xFE, 0xFF) -> Charsets.UTF_16BE
-            else -> Charsets.UTF_8
-        }
-        val bomSize = when {
-            header.size >= 3 && matchBytes(header, 0xEF, 0xBB, 0xBF) -> 3
-            header.size >= 2 && (matchBytes(header, 0xFF, 0xFE) || matchBytes(header, 0xFE, 0xFF)) -> 2
-            else -> 0
-        }
-        val sampleSize = minOf(header.size - bomSize, 512)
-        if (sampleSize <= 0) return null
-
-        val content = runCatching {
-            String(header, bomSize, sampleSize, charset).trim()
-        }.getOrDefault("")
+    private fun structuredTextMime(sample: String): String? {
+        val content = sample.trim()
         if (content.isEmpty()) return null
-
+        val lower = content.lowercase(Locale.ROOT)
         return when {
             content.startsWith("{") || content.startsWith("[") -> "application/json"
-            content.startsWith("<?xml", ignoreCase = true) -> "text/xml"
+            isSvg(lower) -> "image/svg+xml"
+            lower.startsWith("<?xml") -> "text/xml"
             content.startsWith("<") -> {
-                val lower = content.lowercase(Locale.ROOT)
                 if (lower.startsWith("<!doctype html") || lower.contains("<html")) {
                     "text/html"
                 } else {
                     "text/xml"
                 }
             }
-            content.startsWith("---") || """(?m)^\w+:\s+.+""".toRegex().containsMatchIn(content) ->
-                "text/yaml"
+            content.startsWith("---") || YAML_LINE.containsMatchIn(content) -> "text/yaml"
             content.startsWith("# ") || content.contains("**") || content.contains("- [ ]") ->
                 "text/markdown"
             isCsv(content) -> "text/csv"
             else -> null
         }
+    }
+
+    /** SVG when the first element is svg, possibly after an XML prolog or comments. */
+    private fun isSvg(lower: String): Boolean {
+        if (lower.startsWith("<svg")) return true
+        if (!lower.startsWith("<?xml") && !lower.startsWith("<!--") &&
+            !lower.startsWith("<!doctype svg")
+        ) return false
+        val svg = lower.indexOf("<svg")
+        val html = lower.indexOf("<html")
+        return svg >= 0 && (html < 0 || svg < html)
     }
 
     private fun isCsv(content: String): Boolean {
@@ -548,29 +498,6 @@ object MimeDetector {
         return columnCounts.all { it > 1 && it == columnCounts.first() }
     }
 
-    private fun getCharsetName(header: ByteArray): String {
-        if (header.size >= 3 && matchBytes(header, 0xEF, 0xBB, 0xBF)) return "UTF-8"
-        if (header.size >= 2 && matchBytes(header, 0xFF, 0xFE)) return "UTF-16LE"
-        if (header.size >= 2 && matchBytes(header, 0xFE, 0xFF)) return "UTF-16BE"
-        val sampleSize = minOf(header.size, 1024)
-        val allAscii = (0 until sampleSize).all { (header[it].toInt() and 0xFF) <= 0x7F }
-        return if (allAscii) "ASCII" else "UTF-8"
-    }
-
-    private fun isLikelyText(header: ByteArray): Boolean {
-        if (header.size >= 3 && matchBytes(header, 0xEF, 0xBB, 0xBF)) return true
-        if (header.size >= 2 &&
-            (matchBytes(header, 0xFF, 0xFE) || matchBytes(header, 0xFE, 0xFF))
-        ) return true
-        val sampleSize = minOf(header.size, 1024)
-        if (sampleSize == 0) return false
-        val printable = (0 until sampleSize).count {
-            val value = header[it].toInt() and 0xFF
-            value in 9..13 || value in 32..126
-        }
-        return printable.toDouble() / sampleSize > 0.8
-    }
-
     private fun isAacAdts(header: ByteArray): Boolean {
         if (header.size < 2) return false
         val first = header[0].toInt() and 0xFF
@@ -578,13 +505,33 @@ object MimeDetector {
         return first == 0xFF && (second and 0xF6) == 0xF0
     }
 
+    /** Frame sync plus valid version, layer, bitrate and sample-rate fields. */
     private fun isMpegAudioFrame(header: ByteArray): Boolean {
-        if (header.size < 2) return false
+        if (header.size < 3) return false
         val first = header[0].toInt() and 0xFF
         val second = header[1].toInt() and 0xFF
-        val hasSync = first == 0xFF && (second and 0xE0) == 0xE0
-        val validLayer = (second and 0x06) != 0
-        return hasSync && validLayer && !isAacAdts(header)
+        val third = header[2].toInt() and 0xFF
+        if (first != 0xFF || (second and 0xE0) != 0xE0 || isAacAdts(header)) return false
+        val version = (second shr 3) and 0x03
+        val layer = (second shr 1) and 0x03
+        val bitrate = (third shr 4) and 0x0F
+        val sampleRate = (third shr 2) and 0x03
+        return version != 0x01 && layer != 0x00 && bitrate != 0x0F && sampleRate != 0x03
+    }
+
+    /** 188-byte packets, or 192-byte M2TS packets with a 4-byte timestamp prefix. */
+    private fun isMpegTransportStream(header: ByteArray): Boolean =
+        hasSyncBytes(header, 0, 188) || hasSyncBytes(header, 4, 192)
+
+    private fun hasSyncBytes(header: ByteArray, start: Int, packetSize: Int): Boolean =
+        header.size > start + packetSize * 3 &&
+            (0..3).all { header[start + it * packetSize] == 0x47.toByte() }
+
+    private fun isTorrent(header: ByteArray): Boolean {
+        if (header.size < 12 || header[0] != 'd'.code.toByte()) return false
+        val keyLength = header[1].toInt()
+        if (keyLength !in '1'.code..'9'.code) return false
+        return ByteSearch.indexOf(header, TORRENT_INFO) >= 0
     }
 
     private fun containsAscii(
@@ -597,23 +544,12 @@ object MimeDetector {
         return sample.contains(text, ignoreCase)
     }
 
-    private fun indexOfBytes(header: ByteArray, needle: ByteArray, maxOffset: Int): Int {
-        if (needle.isEmpty() || header.size < needle.size) return -1
-        val last = minOf(header.size - needle.size, maxOffset)
-        for (offset in 0..last) {
-            if (needle.indices.all { header[offset + it] == needle[it] }) return offset
-        }
-        return -1
-    }
+    private fun ascii(header: ByteArray, offset: Int, text: String): Boolean =
+        ByteSearch.matchesAscii(header, offset, text)
 
     private fun matchBytes(header: ByteArray, vararg bytes: Int): Boolean =
         header.size >= bytes.size && bytes.indices.all {
             header[it].toInt() and 0xFF == bytes[it]
-        }
-
-    private fun matchBytesAt(header: ByteArray, offset: Int, vararg bytes: Int): Boolean =
-        offset >= 0 && header.size >= offset + bytes.size && bytes.indices.all {
-            header[offset + it].toInt() and 0xFF == bytes[it]
         }
 
     private fun magic(type: FileType, mime: String, evidence: String): DetectionResult =
@@ -646,6 +582,9 @@ object MimeDetector {
         evidence
     )
 
+    private fun textMatch(type: FileType, mime: String, evidence: String): DetectionResult =
+        result(type, mime, DetectionConfidence.HIGH, DetectionSource.TEXT_HEURISTIC, evidence)
+
     private fun result(
         type: FileType,
         mime: String,
@@ -654,7 +593,7 @@ object MimeDetector {
         evidence: String
     ): DetectionResult = DetectionResult(
         type,
-        mime.substringBefore(';').trim().ifBlank { ALL_MIME },
+        MimeTypes.normalize(mime),
         confidence,
         source,
         evidence

@@ -44,7 +44,7 @@ object ByteReader {
         }
     }
 
-    private fun skipFully(stream: InputStream, n: Long): Boolean {
+    internal fun skipFully(stream: InputStream, n: Long): Boolean {
         var remaining = n
         while (remaining > 0) {
             val skipped = stream.skip(remaining)
@@ -55,6 +55,29 @@ object ByteReader {
                 // byte guarantees progress without returning duplicate pages.
                 if (stream.read() == -1) return false
                 remaining--
+            }
+        }
+        return true
+    }
+
+    /** Reads exactly [length] bytes into [buffer]; returns false at end of stream. */
+    internal fun readFully(
+        stream: InputStream,
+        buffer: ByteArray,
+        offset: Int = 0,
+        length: Int = buffer.size - offset
+    ): Boolean {
+        var total = 0
+        while (total < length) {
+            val read = stream.read(buffer, offset + total, length - total)
+            if (read < 0) return false
+            if (read == 0) {
+                val single = stream.read()
+                if (single == -1) return false
+                buffer[offset + total] = single.toByte()
+                total++
+            } else {
+                total += read
             }
         }
         return true
