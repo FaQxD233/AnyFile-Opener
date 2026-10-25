@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Copies forwarded under a corrected name or from legacy file:// sources (FileBridge). -->
+<paths>
+    <cache-path
+        name="bridge"
+        path="bridge/" />
+</paths>

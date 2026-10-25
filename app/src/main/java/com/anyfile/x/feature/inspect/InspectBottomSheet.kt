@@ -10,7 +10,11 @@ import androidx.lifecycle.lifecycleScope
 import com.anyfile.x.data.PrefsManager
 import com.anyfile.x.databinding.BottomSheetInspectBinding
 import com.anyfile.x.engine.FileInspector
+import com.anyfile.x.engine.MimeTypes
+import com.anyfile.x.engine.NameCheck
 import com.anyfile.x.engine.utils.ByteReader
+import com.anyfile.x.feature.common.SaveCopyAction
+import com.anyfile.x.feature.common.TaskProgress
 import com.anyfile.x.feature.common.formatFileSize
 import com.anyfile.x.routing.IntentRouter
 import com.google.android.material.bottomsheet.BottomSheetDialogFragment
@@ -20,6 +24,7 @@ class InspectBottomSheet : BottomSheetDialogFragment() {
 
     private var _binding: BottomSheetInspectBinding? = null
     private val binding get() = _binding!!
+    private val saveAction = SaveCopyAction(this)
 
     private var loadedBytes = ByteArray(0)
 
@@ -53,29 +58,40 @@ class InspectBottomSheet : BottomSheetDialogFragment() {
         val uri = arguments?.getString(ARG_URI)?.let(Uri::parse) ?: return
         val appContext = requireContext().applicationContext
         val fallbackMime = PrefsManager(appContext).defaultMime
-        var resolvedFileName: String? = null
-        var detectedMime = "application/octet-stream"
+        val progress = TaskProgress(binding.taskProgress)
+        var inspection: FileInspector.Inspection? = null
+        var saveName: String? = null
 
         binding.btnShare.setOnClickListener {
             IntentRouter.share(
                 requireContext(),
                 uri,
-                detectedMime,
-                resolvedFileName
+                inspection?.result?.mime ?: MimeTypes.OCTET_STREAM,
+                inspection?.displayName
             )
+        }
+        binding.btnSave.setOnClickListener {
+            val current = inspection ?: return@setOnClickListener
+            saveAction.start(uri, saveName ?: "file", current.size, progress) { busy ->
+                _binding?.btnSave?.isEnabled = !busy
+            }
         }
 
         viewLifecycleOwner.lifecycleScope.launch {
-            val inspection = FileInspector.inspect(appContext, uri, fallbackMime)
-            val result = inspection.result
-            resolvedFileName = inspection.displayName
-            detectedMime = result.mime
-            binding.inspectFileName.text = inspection.displayName ?: "Unknown"
-            binding.inspectSizeText.text = inspection.size?.let(::formatFileSize) ?: "Unknown"
+            val current = FileInspector.inspect(appContext, uri, fallbackMime)
+            val result = current.result
+            val hint = NameCheck.check(current.displayName, result)
+            inspection = current
+            saveName = hint?.suggestedName ?: current.displayName
+            binding.inspectFileName.text = current.displayName ?: "Unknown"
+            binding.inspectSizeText.text = current.size?.let(::formatFileSize) ?: "Unknown"
             binding.inspectMimeText.text = result.mime
             binding.headerDetectionLabel.visibility = View.VISIBLE
             binding.headerDetectionLabel.text =
                 "${result.confidence.label} confidence • ${result.source.label}\n${result.evidence}"
+            binding.nameHintText.visibility = if (hint == null) View.GONE else View.VISIBLE
+            binding.nameHintText.text = hint?.let { "${it.message} → ${it.suggestedName}" }
+            binding.btnSave.isEnabled = true
         }
 
         binding.btnLoadMore.isEnabled = false

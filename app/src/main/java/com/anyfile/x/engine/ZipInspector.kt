@@ -222,6 +222,7 @@ internal object ZipInspector {
             else -> return null
         }
         return container(FileType.APK, mime, "$label bundle with $apkCount APK files")
+            .copy(extensionHint = label.lowercase(Locale.ROOT))
     }
 
     private fun officeOpenXml(names: Set<String>): DetectionResult? {

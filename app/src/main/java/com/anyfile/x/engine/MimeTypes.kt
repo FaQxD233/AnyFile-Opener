@@ -137,6 +137,12 @@ object MimeTypes {
     fun mimeForExtension(extension: String): String? =
         known(extension)?.mime ?: systemMimeFor(extension)
 
+    /** Concrete type for a new file called [fileName], or octet-stream. */
+    fun mimeForFileName(fileName: String): String =
+        mimeForExtension(extensionOf(fileName))
+            ?.takeIf { it != ANY && !it.endsWith("/*") }
+            ?: OCTET_STREAM
+
     fun fileTypeFor(mime: String): FileType {
         val type = normalize(mime)
         return when {

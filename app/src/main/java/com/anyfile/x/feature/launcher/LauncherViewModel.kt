@@ -6,6 +6,8 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.anyfile.x.engine.FileInspector
 import com.anyfile.x.engine.MimeDetector
+import com.anyfile.x.files.FileBridge
+import com.anyfile.x.files.FileExporter
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -22,6 +24,17 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         val result: MimeDetector.DetectionResult
     )
 
+    /** A copy in progress (saving, or preparing a renamed copy to open). */
+    data class FileTask(val label: String, val done: Long, val total: Long?)
+
+    /** A cached copy ready to be opened under its corrected name. */
+    data class RenamedCopy(
+        val original: Uri,
+        val copy: Uri,
+        val fileName: String,
+        val mime: String
+    )
+
     private val _detectionResult = MutableStateFlow<MimeDetector.DetectionResult?>(null)
     val detectionResult: StateFlow<MimeDetector.DetectionResult?> = _detectionResult
 
@@ -33,6 +46,21 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
     val autoOpenEvent: SharedFlow<AutoOpenRequest> = _autoOpenEvent
     private var detectionJob: Job? = null
     private var detectionGeneration = 0L
+
+    private val _fileTask = MutableStateFlow<FileTask?>(null)
+    val fileTask: StateFlow<FileTask?> = _fileTask
+
+    private val _messages = MutableSharedFlow<String>(extraBufferCapacity = 4)
+    val messages: SharedFlow<String> = _messages
+
+    private val _renamedCopies = MutableSharedFlow<RenamedCopy>(extraBufferCapacity = 1)
+    val renamedCopies: SharedFlow<RenamedCopy> = _renamedCopies
+
+    private var fileTaskJob: Job? = null
+
+    /** Size of the selected file when its provider reports one. */
+    var selectedSize: Long? = null
+        private set
 
     fun detectMime(
         uri: Uri,
@@ -73,7 +101,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         }
         detectionJob = job
     }
-    
+
     fun resetDetection() {
         detectionJob?.cancel()
         detectionJob = null
@@ -82,6 +110,42 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         _isDetecting.value = false
     }
 
-    suspend fun queryFileName(uri: Uri): String? =
-        FileInspector.metadata(getApplication<Application>(), uri).displayName
+    suspend fun queryFileName(uri: Uri): String? {
+        val metadata = FileInspector.metadata(getApplication<Application>(), uri)
+        selectedSize = metadata.size
+        return metadata.displayName
+    }
+
+    /** Copies [source] into the document the user created; survives rotation. */
+    fun saveCopy(source: Uri, target: Uri) = runFileTask("Saving") { onProgress ->
+        FileExporter.export(getApplication<Application>(), source, target, selectedSize, onProgress)
+        _messages.emit("Copy saved")
+    }
+
+    /** Prepares a cached copy named [fileName]; the screen opens it from [renamedCopies]. */
+    fun openWithCorrectedName(source: Uri, fileName: String, mime: String) =
+        runFileTask("Preparing") { onProgress ->
+            val copy = FileBridge.copy(getApplication<Application>(), source, fileName, selectedSize, onProgress)
+            _renamedCopies.emit(RenamedCopy(source, copy, fileName, mime))
+        }
+
+    private fun runFileTask(
+        label: String,
+        block: suspend (onProgress: (Long, Long?) -> Unit) -> Unit
+    ) {
+        if (fileTaskJob?.isActive == true) return
+        val total = selectedSize
+        fileTaskJob = viewModelScope.launch {
+            _fileTask.value = FileTask(label, 0, total)
+            try {
+                block { done, size -> _fileTask.value = FileTask(label, done, size) }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _messages.emit("$label failed${e.message?.let { ": $it" }.orEmpty()}")
+            } finally {
+                _fileTask.value = null
+            }
+        }
+    }
 }

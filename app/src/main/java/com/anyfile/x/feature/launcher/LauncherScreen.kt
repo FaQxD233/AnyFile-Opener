@@ -1,6 +1,7 @@
 package com.anyfile.x.feature.launcher
 
 import android.net.Uri
+import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -22,6 +23,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -29,6 +31,10 @@ import com.anyfile.x.data.PrefsManager
 import com.anyfile.x.data.RecentFile
 import com.anyfile.x.data.RecentFileStore
 import com.anyfile.x.engine.MimeDetector
+import com.anyfile.x.engine.MimeTypes
+import com.anyfile.x.engine.NameCheck
+import com.anyfile.x.feature.common.SaveCopyContract
+import com.anyfile.x.feature.common.formatFileSize
 import com.anyfile.x.routing.IntentRouter
 import java.text.SimpleDateFormat
 import java.util.*
@@ -48,6 +54,7 @@ fun LauncherScreen(
     val isDetecting by viewModel.isDetecting.collectAsStateWithLifecycle()
     val recentFilesFlow = remember(context) { RecentFileStore.getRecentFiles(context) }
     val recentFiles by recentFilesFlow.collectAsStateWithLifecycle(initialValue = emptyList())
+    val fileTask by viewModel.fileTask.collectAsStateWithLifecycle()
 
     var selectedUriString by rememberSaveable { mutableStateOf<String?>(null) }
     var fileName by rememberSaveable { mutableStateOf("") }
@@ -72,6 +79,14 @@ fun LauncherScreen(
             autoOpenPending = prefsManager.autoOpen
             selectionVersion++
         }
+    }
+
+    val saveLauncher = rememberLauncherForActivityResult(SaveCopyContract()) { target ->
+        val source = currentSelectedUri
+        if (target != null && source != null) viewModel.saveCopy(source, target)
+    }
+    val suggestion = remember(detectionResult, fileName) {
+        detectionResult?.let { NameCheck.check(fileName, it) }
     }
 
     LaunchedEffect(selectedUriString, selectionVersion) {
@@ -124,6 +139,24 @@ fun LauncherScreen(
         }
     }
 
+    LaunchedEffect(viewModel) {
+        viewModel.renamedCopies.collect { renamed ->
+            IntentRouter.open(
+                context,
+                renamed.copy,
+                renamed.mime,
+                renamed.fileName,
+                recentUri = renamed.original
+            )
+        }
+    }
+
+    LaunchedEffect(viewModel) {
+        viewModel.messages.collect { message ->
+            Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+        }
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(
@@ -153,17 +186,33 @@ fun LauncherScreen(
 
             if (selectedUri != null) {
                 item {
-                    DetectionInfo(detectionResult)
+                    DetectionInfo(detectionResult, suggestion)
                 }
 
                 item {
                     ActionButtons(
-                        enabled = !isPreparing && !isDetecting && detectionResult != null,
+                        enabled = !isPreparing && !isDetecting && detectionResult != null &&
+                            fileTask == null,
+                        correctedName = suggestion?.suggestedName,
                         onOpenNormal = {
                             val mime = manualMime.takeIf { it.isNotBlank() } ?: detectionResult?.mime ?: "application/octet-stream"
                             selectedUri?.let {
                                 IntentRouter.open(context, it, mime, fileName)
                             }
+                        },
+                        onOpenCorrected = {
+                            val uri = selectedUri
+                            val result = detectionResult
+                            val hint = suggestion
+                            if (uri != null && result != null && hint != null) {
+                                viewModel.openWithCorrectedName(uri, hint.suggestedName, result.mime)
+                            }
+                        },
+                        onSave = {
+                            val name = suggestion?.suggestedName ?: fileName.ifBlank { "file" }
+                            saveLauncher.launch(
+                                SaveCopyContract.Request(name, MimeTypes.mimeForFileName(name))
+                            )
                         },
                         onShare = {
                             val mime = manualMime.takeIf { it.isNotBlank() }
@@ -176,6 +225,12 @@ fun LauncherScreen(
                         onOpenAs = { selectedUri?.let { onOpenAsClick(it) } },
                         onInspect = { selectedUri?.let { onInspectClick(it) } }
                     )
+                }
+
+                fileTask?.let { task ->
+                    item {
+                        FileTaskRow(task)
+                    }
                 }
 
                 item {
@@ -291,9 +346,9 @@ fun FilePickerArea(fileName: String, isDetecting: Boolean, onClick: () -> Unit) 
 }
 
 @Composable
-fun DetectionInfo(result: MimeDetector.DetectionResult?) {
+fun DetectionInfo(result: MimeDetector.DetectionResult?, suggestion: NameCheck.Suggestion?) {
     if (result == null) return
-    
+
     Row(
         verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier
@@ -315,6 +370,13 @@ fun DetectionInfo(result: MimeDetector.DetectionResult?) {
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
+            if (suggestion != null) {
+                Text(
+                    suggestion.message,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.tertiary
+                )
+            }
         }
     }
 }
@@ -322,7 +384,10 @@ fun DetectionInfo(result: MimeDetector.DetectionResult?) {
 @Composable
 fun ActionButtons(
     enabled: Boolean,
+    correctedName: String?,
     onOpenNormal: () -> Unit,
+    onOpenCorrected: () -> Unit,
+    onSave: () -> Unit,
     onShare: () -> Unit,
     onOpenAs: () -> Unit,
     onInspect: () -> Unit
@@ -334,6 +399,15 @@ fun ActionButtons(
             modifier = Modifier.fillMaxWidth()
         ) {
             Text("Open")
+        }
+        if (correctedName != null) {
+            OutlinedButton(
+                onClick = onOpenCorrected,
+                enabled = enabled,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("Open as $correctedName", maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
         }
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -348,6 +422,20 @@ fun ActionButtons(
                 Spacer(Modifier.width(6.dp))
                 Text("Share")
             }
+            FilledTonalButton(
+                onClick = onSave,
+                enabled = enabled,
+                modifier = Modifier.weight(1f)
+            ) {
+                Icon(Icons.Default.Save, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(6.dp))
+                Text("Save copy")
+            }
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
             OutlinedButton(
                 onClick = onOpenAs,
                 enabled = enabled,
@@ -355,13 +443,38 @@ fun ActionButtons(
             ) {
                 Text("Open As…")
             }
+            OutlinedButton(
+                onClick = onInspect,
+                enabled = enabled,
+                modifier = Modifier.weight(1f)
+            ) {
+                Text("Inspect")
+            }
         }
-        TextButton(
-            onClick = onInspect,
-            enabled = enabled,
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Text("Inspect Binary")
+    }
+}
+
+@Composable
+fun FileTaskRow(task: LauncherViewModel.FileTask) {
+    val total = task.total?.takeIf { it > 0 }
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Text(
+            if (total != null) {
+                "${task.label} ${formatFileSize(task.done)} / ${formatFileSize(total)}"
+            } else {
+                "${task.label} ${formatFileSize(task.done)}"
+            },
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(Modifier.height(4.dp))
+        if (total != null) {
+            LinearProgressIndicator(
+                progress = { (task.done.toFloat() / total).coerceIn(0f, 1f) },
+                modifier = Modifier.fillMaxWidth()
+            )
+        } else {
+            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
         }
     }
 }

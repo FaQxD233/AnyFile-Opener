@@ -83,6 +83,17 @@
             app:tint="@color/primary" />
 
         <ImageButton
+            android:id="@+id/btnSave"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:contentDescription="Save a copy"
+            android:enabled="false"
+            android:padding="12dp"
+            android:src="@drawable/ic_save"
+            app:tint="@color/primary" />
+
+        <ImageButton
             android:id="@+id/btnShare"
             android:layout_width="48dp"
             android:layout_height="48dp"
@@ -90,6 +101,16 @@
             android:contentDescription="Share file"
             android:padding="12dp"
             android:src="@android:drawable/ic_menu_share"
+            app:tint="@color/primary" />
+
+        <ImageButton
+            android:id="@+id/btnInspect"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:contentDescription="Inspect file"
+            android:padding="12dp"
+            android:src="@drawable/ic_info"
             app:tint="@color/primary" />
     </LinearLayout>
 
@@ -104,6 +125,35 @@
         app:chipIconVisible="true"
         app:chipIconSize="20dp"
         android:textColor="@color/on_primary_container" />
+
+    <!-- Shown when the file extension does not match the detected content -->
+    <LinearLayout
+        android:id="@+id/nameHint"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginBottom="12dp"
+        android:orientation="vertical"
+        android:visibility="gone">
+
+        <TextView
+            android:id="@+id/nameHintText"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:textColor="@color/tertiary"
+            android:textSize="12sp" />
+
+        <com.google.android.material.chip.Chip
+            android:id="@+id/correctedOpenChip"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:textColor="@color/on_primary_container"
+            app:chipBackgroundColor="@color/primary_container" />
+    </LinearLayout>
+
+    <include
+        android:id="@+id/taskProgress"
+        layout="@layout/view_task_progress" />
 
     <View
         android:layout_width="match_parent"

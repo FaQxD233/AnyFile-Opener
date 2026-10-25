@@ -65,7 +65,9 @@ object MimeDetector {
         val mime: String,
         val confidence: DetectionConfidence = DetectionConfidence.LOW,
         val source: DetectionSource = DetectionSource.FALLBACK,
-        val evidence: String = "No known signature was found"
+        val evidence: String = "No known signature was found",
+        /** Extension implied by the content when the MIME type alone is too generic. */
+        val extensionHint: String? = null
     )
 
     fun mimeOf(type: FileType, fallback: String = ALL_MIME): String = when (type.category) {
