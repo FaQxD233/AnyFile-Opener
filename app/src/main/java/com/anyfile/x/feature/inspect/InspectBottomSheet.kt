@@ -1,33 +1,32 @@
 package com.anyfile.x.feature.inspect
 
-import android.database.Cursor
+import android.content.Context
 import android.net.Uri
 import android.os.Bundle
-import android.provider.OpenableColumns
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
 import androidx.lifecycle.lifecycleScope
-import com.google.android.material.bottomsheet.BottomSheetDialogFragment
+import com.anyfile.x.data.PrefsManager
 import com.anyfile.x.databinding.BottomSheetInspectBinding
-import com.anyfile.x.engine.MimeDetector
+import com.anyfile.x.engine.FileInspector
 import com.anyfile.x.engine.utils.ByteReader
+import com.anyfile.x.feature.common.formatFileSize
 import com.anyfile.x.routing.IntentRouter
-import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.Dispatchers
+import com.google.android.material.bottomsheet.BottomSheetDialogFragment
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 
 class InspectBottomSheet : BottomSheetDialogFragment() {
 
     private var _binding: BottomSheetInspectBinding? = null
     private val binding get() = _binding!!
-    
-    private var totalBytesRead = 0
-    private var fullByteArray = ByteArray(0)
+
+    private var loadedBytes = ByteArray(0)
 
     companion object {
         private const val ARG_URI = "uri"
+        private const val INITIAL_BYTES = 256
+        private const val PAGE_BYTES = 512
         private const val MAX_INSPECT_BYTES = 64 * 1024
 
         fun newInstance(uri: Uri): InspectBottomSheet {
@@ -51,9 +50,9 @@ class InspectBottomSheet : BottomSheetDialogFragment() {
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
 
-        val uriString = arguments?.getString(ARG_URI) ?: return
-        val uri = Uri.parse(uriString)
-        val resolver = requireContext().applicationContext.contentResolver
+        val uri = arguments?.getString(ARG_URI)?.let(Uri::parse) ?: return
+        val appContext = requireContext().applicationContext
+        val fallbackMime = PrefsManager(appContext).defaultMime
         var resolvedFileName: String? = null
         var detectedMime = "application/octet-stream"
 
@@ -67,55 +66,27 @@ class InspectBottomSheet : BottomSheetDialogFragment() {
         }
 
         viewLifecycleOwner.lifecycleScope.launch {
-            // File name
-            val fileName = withContext(Dispatchers.IO) { queryFileName(resolver, uri) }
-            resolvedFileName = fileName ?: uri.lastPathSegment
-            binding.inspectFileName.text = resolvedFileName ?: "Unknown"
+            val inspection = FileInspector.inspect(appContext, uri, fallbackMime)
+            val result = inspection.result
+            resolvedFileName = inspection.displayName
+            detectedMime = result.mime
+            binding.inspectFileName.text = inspection.displayName ?: "Unknown"
+            binding.inspectSizeText.text = inspection.size?.let(::formatFileSize) ?: "Unknown"
+            binding.inspectMimeText.text = result.mime
+            binding.headerDetectionLabel.visibility = View.VISIBLE
+            binding.headerDetectionLabel.text =
+                "${result.confidence.label} confidence • ${result.source.label}\n${result.evidence}"
+        }
 
-            // File size
-            val size = withContext(Dispatchers.IO) { queryFileSize(resolver, uri) }
-            binding.inspectSizeText.text = if (size >= 0) formatSize(size) else "Unknown"
-
-            // Initial load
-            val loaded = withContext(Dispatchers.IO) { loadBytesInternal(resolver, uri, 256) }
-            updateDumpUI()
-            if (!loaded) showEndOfFile()
-
-            // Same full detection as the open sheet, kept off the main thread.
-            try {
-                val result = withContext(Dispatchers.IO) {
-                    MimeDetector.detect(resolver, uri, fileName)
-                }
-                binding.headerDetectionLabel.visibility = View.VISIBLE
-                binding.headerDetectionLabel.text =
-                    "${result.confidence.label} confidence • ${result.source.label}\n${result.evidence}"
-                binding.inspectMimeText.text = result.mime
-                detectedMime = result.mime
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                binding.inspectMimeText.text = "detection failed"
-            }
+        binding.btnLoadMore.isEnabled = false
+        viewLifecycleOwner.lifecycleScope.launch {
+            loadNext(appContext, uri, INITIAL_BYTES)
         }
 
         binding.btnLoadMore.setOnClickListener {
             binding.btnLoadMore.isEnabled = false
             viewLifecycleOwner.lifecycleScope.launch {
-                val remaining = MAX_INSPECT_BYTES - totalBytesRead
-                val loaded = if (remaining > 0) {
-                    withContext(Dispatchers.IO) {
-                        loadBytesInternal(resolver, uri, minOf(512, remaining))
-                    }
-                } else {
-                    false
-                }
-                updateDumpUI()
-                if (!loaded || totalBytesRead >= MAX_INSPECT_BYTES) {
-                    showEndOfFile(atLimit = totalBytesRead >= MAX_INSPECT_BYTES)
-                } else {
-                    binding.btnLoadMore.isEnabled = true
-                }
-                // Scroll to bottom after loading more
+                loadNext(appContext, uri, PAGE_BYTES)
                 val currentBinding = _binding ?: return@launch
                 val hexScrollView = currentBinding.hexScrollView
                 val asciiScrollView = currentBinding.asciiScrollView
@@ -125,22 +96,26 @@ class InspectBottomSheet : BottomSheetDialogFragment() {
         }
     }
 
-    private fun loadBytesInternal(
-        resolver: android.content.ContentResolver,
-        uri: Uri,
-        count: Int
-    ): Boolean {
-        val newBytes = ByteReader.readBytes(resolver, uri, totalBytesRead.toLong(), count)
-        if (newBytes.isEmpty()) {
-            return false
+    /** Appends the next chunk of the file to the dump, within the inspection limit. */
+    private suspend fun loadNext(context: Context, uri: Uri, count: Int) {
+        val requested = minOf(count, MAX_INSPECT_BYTES - loadedBytes.size)
+        val offset = loadedBytes.size.toLong()
+        val chunk = if (requested > 0) {
+            FileInspector.withIoTimeout(FileInspector.DETECTION_TIMEOUT_MS) {
+                ByteReader.readBytes(context.contentResolver, uri, offset, requested)
+            } ?: ByteArray(0)
+        } else {
+            ByteArray(0)
         }
+        loadedBytes += chunk
+        updateDumpUI()
 
-        val updatedArray = ByteArray(fullByteArray.size + newBytes.size)
-        System.arraycopy(fullByteArray, 0, updatedArray, 0, fullByteArray.size)
-        System.arraycopy(newBytes, 0, updatedArray, fullByteArray.size, newBytes.size)
-        fullByteArray = updatedArray
-        totalBytesRead += newBytes.size
-        return true
+        val atLimit = loadedBytes.size >= MAX_INSPECT_BYTES
+        if (chunk.size < requested || atLimit) {
+            showEndOfFile(atLimit)
+        } else {
+            binding.btnLoadMore.isEnabled = true
+        }
     }
 
     private fun showEndOfFile(atLimit: Boolean = false) {
@@ -149,9 +124,9 @@ class InspectBottomSheet : BottomSheetDialogFragment() {
     }
 
     private fun updateDumpUI() {
-        binding.hexByteCount.text = "OFFSET | HEX DUMP ($totalBytesRead bytes loaded)"
-        binding.hexDumpText.text = buildHexDump(fullByteArray)
-        binding.asciiDumpText.text = buildAsciiPreview(fullByteArray)
+        binding.hexByteCount.text = "OFFSET | HEX DUMP (${loadedBytes.size} bytes loaded)"
+        binding.hexDumpText.text = buildHexDump(loadedBytes)
+        binding.asciiDumpText.text = buildAsciiPreview(loadedBytes)
     }
 
     private fun buildHexDump(bytes: ByteArray): String {
@@ -159,7 +134,7 @@ class InspectBottomSheet : BottomSheetDialogFragment() {
         for (i in bytes.indices step 16) {
             // Offset ruler column
             sb.append("%08X | ".format(i))
-            
+
             for (j in 0 until 16) {
                 if (i + j < bytes.size) {
                     sb.append("%02X ".format(bytes[i + j].toInt() and 0xFF))
@@ -186,47 +161,6 @@ class InspectBottomSheet : BottomSheetDialogFragment() {
             if (i + 16 < bytes.size) sb.append("\n")
         }
         return sb.toString()
-    }
-
-    private fun queryFileName(resolver: android.content.ContentResolver, uri: Uri): String? {
-        var name: String? = null
-        try {
-            val cursor: Cursor? = resolver.query(
-                uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null
-            )
-            cursor?.use {
-                if (it.moveToFirst()) {
-                    val col = it.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-                    if (col >= 0) name = it.getString(col)
-                }
-            }
-        } catch (_: Exception) {}
-        return name
-    }
-
-    private fun queryFileSize(resolver: android.content.ContentResolver, uri: Uri): Long {
-        var size = -1L
-        try {
-            val cursor: Cursor? = resolver.query(
-                uri, arrayOf(OpenableColumns.SIZE), null, null, null
-            )
-            cursor?.use {
-                if (it.moveToFirst()) {
-                    val col = it.getColumnIndex(OpenableColumns.SIZE)
-                    if (col >= 0 && !it.isNull(col)) size = it.getLong(col)
-                }
-            }
-        } catch (_: Exception) {}
-        return size
-    }
-
-    private fun formatSize(bytes: Long): String {
-        return when {
-            bytes < 1024 -> "$bytes B"
-            bytes < 1024 * 1024 -> "%.1f KB".format(bytes / 1024.0)
-            bytes < 1024 * 1024 * 1024 -> "%.1f MB".format(bytes / (1024.0 * 1024))
-            else -> "%.2f GB".format(bytes / (1024.0 * 1024 * 1024))
-        }
     }
 
     override fun onDestroyView() {

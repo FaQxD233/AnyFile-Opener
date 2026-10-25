@@ -5,28 +5,22 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.widget.Toast
-import androidx.activity.compose.setContent
 import androidx.appcompat.app.AppCompatActivity
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.runtime.getValue
-import androidx.compose.ui.Modifier
 import androidx.fragment.app.Fragment
 import androidx.fragment.app.FragmentManager
 import androidx.lifecycle.lifecycleScope
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.anyfile.x.data.PrefsManager
 import com.anyfile.x.feature.openas.OpenAsBottomSheet
 import com.anyfile.x.routing.ChooserRequestStore
-import com.anyfile.x.ui.AnyFileOpenerTheme
-import com.anyfile.x.ui.ThemePreference
 import java.util.ArrayDeque
 import java.util.LinkedHashSet
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
-/** Transparent entry point that processes VIEW/SEND files as a sequential queue. */
+/**
+ * Transparent entry point that processes VIEW/SEND files as a sequential queue.
+ * It has no content view of its own: the queue is shown as View-based sheets.
+ */
 class MainActivity : AppCompatActivity() {
 
     private val pendingUris = ArrayDeque<Uri>()
@@ -40,16 +34,6 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-
-        val prefs = PrefsManager(this)
-        setContent {
-            val themePref by prefs.themePreference.collectAsStateWithLifecycle(
-                ThemePreference.SYSTEM_DEFAULT
-            )
-            AnyFileOpenerTheme(themePreference = themePref) {
-                Box(modifier = Modifier.fillMaxSize())
-            }
-        }
 
         supportFragmentManager.setFragmentResultListener(
             OpenAsBottomSheet.RESULT_REQUEST_KEY,

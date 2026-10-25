@@ -4,8 +4,8 @@ import android.app.Application
 import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.anyfile.x.engine.FileInspector
 import com.anyfile.x.engine.MimeDetector
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -13,7 +13,6 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 
 class LauncherViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -48,14 +47,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
 
         val job = viewModelScope.launch {
             try {
-                val result = withContext(Dispatchers.IO) {
-                    MimeDetector.detect(
-                        getApplication<Application>().contentResolver,
-                        uri,
-                        fileName,
-                        fallbackMime
-                    )
-                }
+                val result = FileInspector.detect(getApplication<Application>(), uri, fileName, fallbackMime)
                 if (generation == detectionGeneration) {
                     _detectionResult.value = result
                     if (triggerAutoOpen &&
@@ -90,23 +82,6 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         _isDetecting.value = false
     }
 
-    suspend fun queryFileName(uri: Uri): String? = withContext(Dispatchers.IO) {
-        var name: String? = null
-        try {
-            getApplication<Application>().contentResolver.query(
-                uri,
-                arrayOf(android.provider.OpenableColumns.DISPLAY_NAME),
-                null,
-                null,
-                null
-            )?.use {
-                if (it.moveToFirst()) {
-                    val column = it.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
-                    if (column >= 0) name = it.getString(column)
-                }
-            }
-        } catch (_: Exception) {}
-        name
-    }
-
+    suspend fun queryFileName(uri: Uri): String? =
+        FileInspector.metadata(getApplication<Application>(), uri).displayName
 }

@@ -105,15 +105,6 @@
         app:chipIconSize="20dp"
         android:textColor="@color/on_primary_container" />
 
-    <TextView
-        android:id="@+id/defaultRuleText"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginBottom="8dp"
-        android:textColor="@color/on_surface_variant"
-        android:textSize="12sp"
-        android:visibility="gone" />
-
     <View
         android:layout_width="match_parent"
         android:layout_height="1dp"
@@ -127,34 +118,6 @@
         android:layout_height="wrap_content"
         android:clipToPadding="false"
         android:overScrollMode="never" />
-
-    <LinearLayout
-        android:id="@+id/defaultRuleActions"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="12dp"
-        android:gravity="center"
-        android:orientation="horizontal"
-        android:visibility="gone">
-
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/btnSetMimeDefault"
-            style="@style/Widget.MaterialComponents.Button.TextButton"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:text="Set MIME default"
-            android:textColor="@color/primary" />
-
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/btnSetExtensionDefault"
-            style="@style/Widget.MaterialComponents.Button.TextButton"
-            android:layout_width="0dp"
-            android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:text="Set extension default"
-            android:textColor="@color/primary" />
-    </LinearLayout>
 
     <LinearLayout
         android:id="@+id/queueActions"

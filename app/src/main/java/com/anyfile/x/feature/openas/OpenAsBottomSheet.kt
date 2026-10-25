@@ -3,7 +3,6 @@ package com.anyfile.x.feature.openas
 import android.content.DialogInterface
 import android.net.Uri
 import android.os.Bundle
-import android.provider.OpenableColumns
 import android.util.Log
 import android.view.LayoutInflater
 import android.view.View
@@ -11,16 +10,13 @@ import android.view.ViewGroup
 import androidx.core.os.bundleOf
 import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.GridLayoutManager
-import com.anyfile.x.data.DefaultAppRuleScope
-import com.anyfile.x.data.DefaultAppRuleStore
 import com.anyfile.x.data.PrefsManager
 import com.anyfile.x.databinding.BottomSheetOpenAsBinding
+import com.anyfile.x.engine.FileInspector
 import com.anyfile.x.engine.MimeDetector
 import com.anyfile.x.routing.IntentRouter
 import com.google.android.material.bottomsheet.BottomSheetDialogFragment
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 
 /** Displays one item in the incoming file queue. */
 class OpenAsBottomSheet : BottomSheetDialogFragment() {
@@ -107,20 +103,12 @@ class OpenAsBottomSheet : BottomSheetDialogFragment() {
             )
         }
 
-        val resolver = requireContext().contentResolver
+        val appContext = requireContext().applicationContext
         viewLifecycleOwner.lifecycleScope.launch {
-            val fileName = withContext(Dispatchers.IO) {
-                resolveFileName(resolver, uri) ?: uri.lastPathSegment
-            }
+            val inspection = FileInspector.inspect(appContext, uri, prefs.defaultMime)
+            val fileName = inspection.displayName
+            val detectedResult = inspection.result
             resolvedFileName = fileName
-            val detectedResult = withContext(Dispatchers.IO) {
-                MimeDetector.detect(
-                    resolver,
-                    uri,
-                    fileName,
-                    prefs.defaultMime
-                )
-            }
             detectedMime = detectedResult.mime
 
             binding.titleText.text = when {
@@ -135,10 +123,7 @@ class OpenAsBottomSheet : BottomSheetDialogFragment() {
 
             binding.btnRecommended.isEnabled = true
 
-            setupDefaultRuleSummary(fileName, detectedResult.mime)
             setupLastAppChip(uri, fileName, detectedResult.mime)
-            // Default-rule setup actions stay hidden in the open sheet; manage rules in Settings.
-            binding.defaultRuleActions.visibility = View.GONE
 
             val types = MimeDetector.FileType.entries.filter { it != MimeDetector.FileType.UNKNOWN }
             val detectedIndex = types.indexOf(detectedResult.fileType)
@@ -172,14 +157,6 @@ class OpenAsBottomSheet : BottomSheetDialogFragment() {
         binding.btnCancelQueue.setOnClickListener { complete(OUTCOME_CANCELLED) }
     }
 
-    private fun setupDefaultRuleSummary(fileName: String?, mime: String) {
-        val rule = DefaultAppRuleStore.findRule(requireContext(), mime, fileName) ?: return
-        val label = DefaultAppRuleStore.appLabel(requireContext(), rule.packageName)
-        val key = if (rule.scope == DefaultAppRuleScope.EXTENSION) ".${rule.key}" else rule.key
-        binding.defaultRuleText.visibility = View.VISIBLE
-        binding.defaultRuleText.text = "Default rule: $key → $label"
-    }
-
     private fun setupLastAppChip(uri: Uri, fileName: String?, mime: String) {
         val context = requireContext()
         val lastPackage = IntentRouter.getLastApp(context, mime) ?: return
@@ -211,7 +188,6 @@ class OpenAsBottomSheet : BottomSheetDialogFragment() {
                             uri,
                             mime,
                             fileName,
-                            useDefaultRule = false,
                             trackChooserResult = isManagedQueue()
                         )
                         handleOpenResult(fallback)
@@ -282,25 +258,5 @@ class OpenAsBottomSheet : BottomSheetDialogFragment() {
     override fun onDestroyView() {
         super.onDestroyView()
         _binding = null
-    }
-
-    private fun resolveFileName(
-        resolver: android.content.ContentResolver,
-        uri: Uri
-    ): String? = try {
-        resolver.query(
-            uri,
-            arrayOf(OpenableColumns.DISPLAY_NAME),
-            null,
-            null,
-            null
-        )?.use { cursor ->
-            if (!cursor.moveToFirst()) return@use null
-            val index = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-            if (index >= 0) cursor.getString(index) else null
-        }
-    } catch (e: Exception) {
-        Log.e("OpenAsBottomSheet", "Could not resolve display name for $uri", e)
-        null
     }
 }

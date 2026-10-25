@@ -6,10 +6,8 @@ import android.net.Uri
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -18,8 +16,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.anyfile.x.data.PrefsManager
-import com.anyfile.x.data.DefaultAppRuleScope
-import com.anyfile.x.data.DefaultAppRuleStore
+import com.anyfile.x.engine.MimeTypes
 import com.anyfile.x.ui.ThemePreference
 import kotlinx.coroutines.launch
 
@@ -33,10 +30,7 @@ fun SettingsScreen(
     var showThemeDialog by remember { mutableStateOf(false) }
     var showAboutDialog by remember { mutableStateOf(false) }
     var showHelpDialog by remember { mutableStateOf(false) }
-    var showClearRulesDialog by remember { mutableStateOf(false) }
     val context = LocalContext.current
-    val rulesFlow = remember(context) { DefaultAppRuleStore.observeRules(context) }
-    val defaultAppRules by rulesFlow.collectAsStateWithLifecycle(initialValue = emptyList())
     var autoOpen by remember { mutableStateOf(prefsManager.autoOpen) }
     var defaultMime by remember { mutableStateOf(prefsManager.defaultMime) }
     val defaultMimeIsValid = remember(defaultMime) { isValidMime(defaultMime) }
@@ -66,7 +60,7 @@ fun SettingsScreen(
                 ListItem(
                     headlineContent = { Text("Auto-open after high-confidence detect") },
                     supportingContent = {
-                        Text("When detection is high-confidence, open the file automatically (uses saved default apps if any)")
+                        Text("When detection is high-confidence, show the app chooser right away")
                     },
                     trailingContent = {
                         Switch(
@@ -85,7 +79,7 @@ fun SettingsScreen(
                     value = defaultMime,
                     onValueChange = {
                         defaultMime = it
-                        if (isValidMime(it)) prefsManager.defaultMime = it.trim()
+                        if (isValidMime(it)) prefsManager.defaultMime = MimeTypes.normalize(it)
                     },
                     label = { Text("Unknown-file fallback MIME") },
                     supportingText = {
@@ -118,51 +112,6 @@ fun SettingsScreen(
                     },
                     modifier = Modifier.clickable { showThemeDialog = true }
                 )
-            }
-
-            item {
-                SectionHeader("DEFAULT APPS")
-            }
-
-            if (defaultAppRules.isEmpty()) {
-                item {
-                    Text(
-                        "No default-app rules yet. Existing rules can be deleted here. " +
-                            "New rules are not created from the open sheet right now.",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
-                    )
-                }
-            } else {
-                items(
-                    items = defaultAppRules,
-                    key = { "${it.scope.name}:${it.key}" }
-                ) { rule ->
-                    val appLabel = DefaultAppRuleStore.appLabel(context, rule.packageName)
-                    val ruleLabel = if (rule.scope == DefaultAppRuleScope.EXTENSION) {
-                        ".${rule.key}"
-                    } else {
-                        rule.key
-                    }
-                    ListItem(
-                        headlineContent = { Text(ruleLabel) },
-                        supportingContent = { Text("${rule.scope.displayName} → $appLabel") },
-                        trailingContent = {
-                            IconButton(onClick = { DefaultAppRuleStore.removeRule(context, rule) }) {
-                                Icon(Icons.Default.Delete, contentDescription = "Delete default-app rule")
-                            }
-                        }
-                    )
-                }
-                item {
-                    TextButton(
-                        onClick = { showClearRulesDialog = true },
-                        modifier = Modifier.padding(horizontal = 8.dp)
-                    ) {
-                        Text("Clear all default-app rules")
-                    }
-                }
             }
 
             // ABOUT SECTION
@@ -227,23 +176,6 @@ fun SettingsScreen(
         )
     }
 
-    if (showClearRulesDialog) {
-        AlertDialog(
-            onDismissRequest = { showClearRulesDialog = false },
-            title = { Text("Clear default apps?") },
-            text = { Text("Files will use the system chooser again until you create new rules.") },
-            confirmButton = {
-                TextButton(onClick = {
-                    DefaultAppRuleStore.clear(context)
-                    showClearRulesDialog = false
-                }) { Text("Clear") }
-            },
-            dismissButton = {
-                TextButton(onClick = { showClearRulesDialog = false }) { Text("Cancel") }
-            }
-        )
-    }
-
     if (showHelpDialog) {
         AlertDialog(
             onDismissRequest = { showHelpDialog = false },
@@ -259,8 +191,7 @@ fun SettingsScreen(
                         "• Advanced: type a custom MIME when detection is too broad.\n" +
                         "• Share: send the file to MT Manager or another app.\n" +
                         "• Inspect Binary: preview hex/ASCII headers.\n" +
-                        "• Recent items may expire when the source only granted temporary access—remove them with ×.\n" +
-                        "• Default apps listed here can be deleted; creation UI is currently limited."
+                        "• Recent items may expire when the source only granted temporary access—remove them with ×."
                 )
             },
             confirmButton = {
@@ -283,11 +214,8 @@ fun SettingsScreen(
     }
 }
 
-private fun isValidMime(value: String): Boolean {
-    val normalized = value.trim()
-    if (normalized == "*/*") return true
-    return Regex("^[A-Za-z0-9!#&^_.+-]+/[A-Za-z0-9!#&^_.+*-]+\\z").matches(normalized)
-}
+private fun isValidMime(value: String): Boolean =
+    value.isNotBlank() && MimeTypes.isValid(MimeTypes.normalize(value))
 
 @Composable
 fun SectionHeader(title: String) {

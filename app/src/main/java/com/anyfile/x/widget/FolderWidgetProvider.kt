@@ -5,9 +5,9 @@ import android.appwidget.AppWidgetManager
 import android.appwidget.AppWidgetProvider
 import android.content.Context
 import android.content.Intent
-import android.net.Uri
 import android.widget.RemoteViews
 import com.anyfile.x.R
+import com.anyfile.x.routing.SystemFileManager
 
 class FolderWidgetProvider : AppWidgetProvider() {
 
@@ -34,28 +34,7 @@ class FolderWidgetProvider : AppWidgetProvider() {
     override fun onReceive(context: Context, intent: Intent) {
         super.onReceive(context, intent)
         if (intent.action == ACTION_OPEN_FOLDER) {
-            val root = Uri.parse("content://com.android.externalstorage.documents/root/primary")
-            val intents = listOf(
-                Intent("android.provider.action.BROWSE_DOCUMENT_ROOT").apply { data = root },
-                Intent(Intent.ACTION_VIEW).apply {
-                    setDataAndType(root, "vnd.android.document/root")
-                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                },
-                Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
-                    addCategory(Intent.CATEGORY_OPENABLE)
-                    type = "*/*"
-                }
-            )
-
-            for (browseIntent in intents) {
-                try {
-                    browseIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    context.startActivity(browseIntent)
-                    break
-                } catch (_: Exception) {
-                    // Try the next public intent variant.
-                }
-            }
+            SystemFileManager.open(context)
         }
     }
 }

@@ -14,11 +14,9 @@ import android.os.Build
 import android.util.Log
 import android.widget.Toast
 import androidx.appcompat.app.AlertDialog
-import com.anyfile.x.data.DefaultAppRuleScope
-import com.anyfile.x.data.DefaultAppRuleStore
 import com.anyfile.x.data.RecentFile
 import com.anyfile.x.data.RecentFileStore
-import java.util.Locale
+import com.anyfile.x.engine.MimeTypes
 import java.util.UUID
 
 /** Fires ACTION_VIEW intents while preserving temporary URI access safely. */
@@ -37,8 +35,6 @@ object IntentRouter {
     )
 
     const val EXTRA_MIME_TYPE = "mime_type"
-    const val EXTRA_RULE_SCOPE = "rule_scope"
-    const val EXTRA_RULE_KEY = "rule_key"
     const val EXTRA_CHOOSER_REQUEST_ID = "chooser_request_id"
     const val EXTRA_FILE_URI = "file_uri"
     const val EXTRA_FILE_NAME = "file_name"
@@ -48,77 +44,25 @@ object IntentRouter {
     private const val ACTION_CHOOSER_RESULT = "com.anyfile.x.action.CHOOSER_RESULT"
 
     /**
-     * Opens a URI with a saved default rule when one exists, otherwise shows the
-     * system chooser. URI access is granted only through the launched intent.
+     * Shows the system chooser for [uri]. URI access is granted only through the
+     * launched intent. [recentUri] is what recent files record; it differs from
+     * [uri] when a cached copy is forwarded in place of the original.
      */
     fun open(
         context: Context,
         uri: Uri,
         mimeType: String,
         fileName: String? = null,
-        useDefaultRule: Boolean = true,
-        trackChooserResult: Boolean = false
-    ): OpenResult {
-        val normalizedMime = normalizeIntentMime(mimeType)
-
-        if (useDefaultRule) {
-            val rule = DefaultAppRuleStore.findRule(context, normalizedMime, fileName)
-            if (rule != null) {
-                val result = openWithPackage(
-                    context,
-                    uri,
-                    normalizedMime,
-                    rule.packageName,
-                    fileName
-                )
-                if (result.status == OpenStatus.DIRECT_STARTED) return result
-
-                // An uninstalled or no-longer-compatible target must not trap the user.
-                DefaultAppRuleStore.removeRule(context, rule)
-            }
-        }
-
-        return showChooser(
-            context,
-            uri,
-            normalizedMime,
-            fileName,
-            null,
-            null,
-            trackChooserResult
-        )
-    }
-
-    /** Opens the chooser and saves the selected package as a new default rule. */
-    fun chooseAndSaveDefault(
-        context: Context,
-        uri: Uri,
-        mimeType: String,
-        fileName: String?,
-        scope: DefaultAppRuleScope,
-        trackChooserResult: Boolean = false
-    ): OpenResult {
-        val normalizedMime = normalizeIntentMime(mimeType)
-        val ruleKey = when (scope) {
-            DefaultAppRuleScope.MIME -> DefaultAppRuleStore.normalizeMime(normalizedMime)
-            DefaultAppRuleScope.EXTENSION -> DefaultAppRuleStore.normalizeExtension(fileName)
-        }
-
-        if (ruleKey == null) {
-            Toast.makeText(context, "This file has no usable ${scope.displayName.lowercase()} rule key", Toast.LENGTH_SHORT).show()
-            return OpenResult(OpenStatus.FAILED)
-        }
-
-        return showChooser(
-            context,
-            uri,
-            normalizedMime,
-            fileName,
-            scope,
-            ruleKey,
-            trackChooserResult
-        )
-    }
+        trackChooserResult: Boolean = false,
+        recentUri: Uri = uri
+    ): OpenResult = showChooser(
+        context,
+        uri,
+        MimeTypes.normalize(mimeType),
+        fileName,
+        trackChooserResult,
+        recentUri
+    )
 
     /** Opens a URI in one known package without granting access to other handlers. */
     fun openWithPackage(
@@ -126,21 +70,22 @@ object IntentRouter {
         uri: Uri,
         mimeType: String,
         packageName: String,
-        fileName: String? = null
+        fileName: String? = null,
+        recentUri: Uri = uri
     ): OpenResult {
         if (packageName == context.packageName) return OpenResult(OpenStatus.FAILED)
 
-        val normalizedMime = normalizeIntentMime(mimeType)
+        val normalizedMime = MimeTypes.normalize(mimeType)
         val intent = createViewIntent(uri, normalizedMime).apply {
             setPackage(packageName)
         }
         try {
             startActivity(context, intent)
         } catch (e: Exception) {
-            Log.w(TAG, "Default package $packageName could not open $uri", e)
+            Log.w(TAG, "Package $packageName could not open $uri", e)
             return OpenResult(OpenStatus.FAILED)
         }
-        recordRecent(context, uri, fileName, normalizedMime)
+        recordRecent(context, recentUri, fileName, normalizedMime)
         return OpenResult(OpenStatus.DIRECT_STARTED)
     }
 
@@ -149,9 +94,8 @@ object IntentRouter {
         uri: Uri,
         mimeType: String,
         fileName: String?,
-        ruleScope: DefaultAppRuleScope?,
-        ruleKey: String?,
-        trackChooserResult: Boolean
+        trackChooserResult: Boolean,
+        recentUri: Uri
     ): OpenResult {
         val viewIntent = createViewIntent(uri, mimeType)
         val allHandlers = try {
@@ -188,11 +132,9 @@ object IntentRouter {
             val receiverIntent = Intent(context, ChooserResultReceiver::class.java).apply {
                 action = "$ACTION_CHOOSER_RESULT.${UUID.randomUUID()}"
                 putExtra(EXTRA_MIME_TYPE, mimeType)
-                putExtra(EXTRA_FILE_URI, uri.toString())
+                putExtra(EXTRA_FILE_URI, recentUri.toString())
                 fileName?.let { putExtra(EXTRA_FILE_NAME, it) }
                 chooserRequestId?.let { putExtra(EXTRA_CHOOSER_REQUEST_ID, it) }
-                ruleScope?.let { putExtra(EXTRA_RULE_SCOPE, it.name) }
-                ruleKey?.let { putExtra(EXTRA_RULE_KEY, it) }
             }
             val pendingFlags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE
@@ -282,18 +224,15 @@ object IntentRouter {
     }
 
     fun saveLastApp(context: Context, mimeType: String, packageName: String) {
-        val key = normalizeIntentMime(mimeType)
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             .edit()
-            .putString(key, packageName)
+            .putString(MimeTypes.normalize(mimeType), packageName)
             .apply()
     }
 
-    fun getLastApp(context: Context, mimeType: String): String? {
-        val key = normalizeIntentMime(mimeType)
-        return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            .getString(key, null)
-    }
+    fun getLastApp(context: Context, mimeType: String): String? =
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getString(MimeTypes.normalize(mimeType), null)
 
     /**
      * Shares a file URI via ACTION_SEND while forwarding temporary read access.
@@ -304,7 +243,7 @@ object IntentRouter {
         mimeType: String,
         fileName: String? = null
     ): Boolean {
-        val normalizedMime = normalizeIntentMime(mimeType)
+        val normalizedMime = MimeTypes.normalize(mimeType)
         return try {
             val sendIntent = Intent(Intent.ACTION_SEND).apply {
                 type = normalizedMime
@@ -325,9 +264,6 @@ object IntentRouter {
             false
         }
     }
-
-    private fun normalizeIntentMime(mimeType: String): String =
-        mimeType.substringBefore(';').trim().lowercase(Locale.ROOT).ifBlank { "*/*" }
 
     private tailrec fun findActivity(context: Context): Activity? = when (context) {
         is Activity -> context
