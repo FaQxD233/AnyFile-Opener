@@ -28,8 +28,10 @@ object ApkInfoReader {
         val versionCode: Long,
         val minSdk: Int?,
         val targetSdk: Int?,
-        /** SHA-256 fingerprints of the signing certificates, colon separated. */
-        val signers: List<String>
+        /** SHA-256 fingerprints of the current signing certificates, colon separated. */
+        val signers: List<String>,
+        /** Fingerprints of certificates replaced through key rotation, oldest first. */
+        val previousSigners: List<String>
     )
 
     private const val DIRECTORY = "apk-info"
@@ -66,6 +68,7 @@ object ApkInfoReader {
         // Needed for the label and resources of an archive that is not installed.
         application?.sourceDir = path
         application?.publicSourceDir = path
+        val (current, previous) = certificates(info)
         return ApkInfo(
             label = application?.let { packageManager.getApplicationLabel(it).toString() },
             packageName = info.packageName,
@@ -73,7 +76,8 @@ object ApkInfoReader {
             versionCode = PackageInfoCompat.getLongVersionCode(info),
             minSdk = application?.minSdkVersion,
             targetSdk = application?.targetSdkVersion,
-            signers = signatures(info).map { fingerprint(it) }
+            signers = current.map { fingerprint(it) },
+            previousSigners = previous.map { fingerprint(it) }
         )
     }
 
@@ -95,18 +99,19 @@ object ApkInfoReader {
         }
     }
 
+    /** Current signing certificates, and the ones they replaced through key rotation. */
     @Suppress("DEPRECATION")
-    private fun signatures(info: PackageInfo): List<Signature> {
+    private fun certificates(info: PackageInfo): Pair<List<Signature>, List<Signature>> {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-            val signing = info.signingInfo ?: return emptyList()
-            val signers = if (signing.hasMultipleSigners()) {
-                signing.apkContentsSigners
-            } else {
-                signing.signingCertificateHistory
+            val signing = info.signingInfo ?: return emptyList<Signature>() to emptyList()
+            if (signing.hasMultipleSigners()) {
+                return signing.apkContentsSigners?.toList().orEmpty() to emptyList()
             }
-            return signers?.toList().orEmpty()
+            // Ordered by rotation: the original certificate first, the current one last.
+            val history = signing.signingCertificateHistory?.toList().orEmpty()
+            return history.takeLast(1) to history.dropLast(1)
         }
-        return info.signatures?.toList().orEmpty()
+        return info.signatures?.toList().orEmpty() to emptyList()
     }
 
     private fun fingerprint(signature: Signature): String {

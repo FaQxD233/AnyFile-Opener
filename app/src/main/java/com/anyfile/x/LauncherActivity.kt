@@ -8,7 +8,7 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
 import androidx.appcompat.app.AppCompatActivity
 import com.anyfile.x.data.PrefsManager
-import com.anyfile.x.feature.inspect.InspectBottomSheet
+import com.anyfile.x.feature.details.DetailsBottomSheet
 import com.anyfile.x.feature.launcher.LauncherScreen
 import com.anyfile.x.feature.launcher.LauncherViewModel
 import com.anyfile.x.feature.openas.OpenAsBottomSheet
@@ -37,13 +37,14 @@ class LauncherActivity : AppCompatActivity() {
                     onSettingsClick = {
                         startActivity(Intent(this, SettingsActivity::class.java))
                     },
-                    onOpenAsClick = { uri ->
-                        OpenAsBottomSheet.newInstance(uri)
+                    onOpenAsClick = { uri, inspection ->
+                        // The home screen has the other actions; the sheet adds the type grid.
+                        OpenAsBottomSheet.newInstance(uri, preset = inspection, typesOnly = true)
                             .show(supportFragmentManager, "open_as")
                     },
-                    onInspectClick = { uri ->
-                        InspectBottomSheet.newInstance(uri)
-                            .show(supportFragmentManager, "inspect")
+                    onDetailsClick = { uri, inspection ->
+                        DetailsBottomSheet.newInstance(uri, inspection)
+                            .show(supportFragmentManager, "details")
                     },
                     onSystemFilesClick = {
                         if (!SystemFileManager.open(this)) {

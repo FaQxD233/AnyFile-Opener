@@ -45,16 +45,16 @@ object MimeDetector {
         "application/x-zip-compressed"
     )
 
-    enum class FileType(val label: String, val emoji: String, val category: String) {
-        VIDEO("Video", "🎬", "video"),
-        AUDIO("Audio", "🎵", "audio"),
-        IMAGE("Image", "🖼", "image"),
-        DOCUMENT("Document", "📄", "document"),
-        ARCHIVE("Archive", "📦", "archive"),
-        APK("APK", "⚙", "apk"),
-        TEXT("Text", "📃", "text"),
-        FONT("Font", "🔤", "font"),
-        UNKNOWN("Unknown", "?", "any")
+    enum class FileType(val label: String, val category: String) {
+        VIDEO("Video", "video"),
+        AUDIO("Audio", "audio"),
+        IMAGE("Image", "image"),
+        DOCUMENT("Document", "document"),
+        ARCHIVE("Archive", "archive"),
+        APK("APK", "apk"),
+        TEXT("Text", "text"),
+        FONT("Font", "font"),
+        UNKNOWN("Unknown", "any")
     }
 
     enum class DetectionConfidence(val label: String) {

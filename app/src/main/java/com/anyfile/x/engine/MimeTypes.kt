@@ -111,6 +111,9 @@ object MimeTypes {
     /** Validates a normalized MIME type. */
     fun isValid(mime: String): Boolean = mime == ANY || MIME_PATTERN.matches(mime)
 
+    /** Validates a type the user typed, such as "Video/MP4; codecs=avc1". */
+    fun isValidInput(value: String): Boolean = value.isNotBlank() && isValid(normalize(value))
+
     /** Lower-case extension of [fileName], or "" when it has no plausible one. */
     fun extensionOf(fileName: String?): String {
         val name = fileName.orEmpty().substringAfterLast('/').substringAfterLast('\\')

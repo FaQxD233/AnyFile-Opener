@@ -8,8 +8,7 @@ import java.nio.charset.CodingErrorAction
 /**
  * Best-effort text encoding detection. Order: byte-order mark, BOM-less UTF-16,
  * ASCII, strict UTF-8, strict GB18030, then ISO-8859-1 as a lossless fallback.
- * Big5 and Shift_JIS cannot be told apart from GBK this way; the preview offers
- * them as manual choices instead.
+ * Big5 and Shift_JIS cannot be told apart from GBK this way.
  */
 object TextEncoding {
 
@@ -22,19 +21,6 @@ object TextEncoding {
     val GB18030: Charset = Charset.forName("GB18030")
     private val UTF_32LE: Charset = Charset.forName("UTF-32LE")
     private val UTF_32BE: Charset = Charset.forName("UTF-32BE")
-
-    /** Charsets offered for manual selection, in menu order. */
-    val choices: List<Pair<String, Charset>> by lazy {
-        listOf(
-            "UTF-8" to Charsets.UTF_8,
-            "GBK / GB18030" to GB18030,
-            "Big5" to Charset.forName("Big5"),
-            "Shift_JIS" to Charset.forName("Shift_JIS"),
-            "UTF-16LE" to Charsets.UTF_16LE,
-            "UTF-16BE" to Charsets.UTF_16BE,
-            "ISO-8859-1" to Charsets.ISO_8859_1
-        )
-    }
 
     fun bomLength(bytes: ByteArray): Int = byteOrderMark(bytes)?.bomLength ?: 0
 

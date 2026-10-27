@@ -1,48 +1,91 @@
 package com.anyfile.x.feature.launcher
 
-import android.Manifest
 import android.net.Uri
-import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.consumeWindowInsets
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.*
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.material.icons.outlined.AddCircleOutline
+import androidx.compose.material.icons.outlined.Category
+import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.ExpandLess
+import androidx.compose.material.icons.outlined.ExpandMore
+import androidx.compose.material.icons.outlined.Folder
+import androidx.compose.material.icons.outlined.History
+import androidx.compose.material.icons.outlined.LinkOff
+import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.ListItem
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.TopAppBar
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
-import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.repeatOnLifecycle
 import com.anyfile.x.data.PrefsManager
 import com.anyfile.x.data.RecentFile
 import com.anyfile.x.data.RecentFileStore
-import com.anyfile.x.engine.MimeDetector
+import com.anyfile.x.engine.FileInspector
 import com.anyfile.x.engine.MimeTypes
 import com.anyfile.x.engine.NameCheck
-import com.anyfile.x.feature.common.SaveCopyContract
-import com.anyfile.x.feature.common.formatFileSize
+import com.anyfile.x.feature.common.FileActions
+import com.anyfile.x.feature.common.FileNameText
+import com.anyfile.x.feature.common.FileSummary
+import com.anyfile.x.feature.common.RenamedOpenEffect
+import com.anyfile.x.feature.common.TaskRows
+import com.anyfile.x.feature.common.rememberNotificationRequest
+import com.anyfile.x.feature.common.rememberSaveCopy
 import com.anyfile.x.routing.IntentRouter
-import com.anyfile.x.tasks.FileTaskService
+import com.anyfile.x.tasks.FileTasks
 import java.text.SimpleDateFormat
-import java.util.*
+import java.util.Date
+import java.util.Locale
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -50,16 +93,17 @@ fun LauncherScreen(
     viewModel: LauncherViewModel,
     prefsManager: PrefsManager,
     onSettingsClick: () -> Unit,
-    onOpenAsClick: (Uri) -> Unit,
-    onInspectClick: (Uri) -> Unit,
+    onOpenAsClick: (Uri, FileInspector.Inspection?) -> Unit,
+    onDetailsClick: (Uri, FileInspector.Inspection?) -> Unit,
     onSystemFilesClick: () -> Unit
 ) {
     val context = LocalContext.current
     val detectionResult by viewModel.detectionResult.collectAsStateWithLifecycle()
     val isDetecting by viewModel.isDetecting.collectAsStateWithLifecycle()
-    val recentFilesFlow = remember(context) { RecentFileStore.getRecentFiles(context) }
-    val recentFiles by recentFilesFlow.collectAsStateWithLifecycle(initialValue = emptyList())
-    val fileTask by viewModel.fileTask.collectAsStateWithLifecycle()
+    val lastApp by viewModel.lastApp.collectAsStateWithLifecycle()
+    val recents by viewModel.recents.collectAsStateWithLifecycle()
+    val tasks by FileTasks.tasks.collectAsStateWithLifecycle()
+    val pendingRename by viewModel.renamedOpener.pending.collectAsStateWithLifecycle()
 
     var selectedUriString by rememberSaveable { mutableStateOf<String?>(null) }
     var fileName by rememberSaveable { mutableStateOf("") }
@@ -79,33 +123,30 @@ fun LauncherScreen(
         if (uri != null) {
             viewModel.resetDetection()
             selectedUriString = uri.toString()
-            fileName = uri.lastPathSegment ?: "Loading file…"
+            // The provider's name arrives shortly; a document ID would only flash meanwhile.
+            fileName = ""
             manualMime = ""
             autoOpenPending = prefsManager.autoOpen
             selectionVersion++
         }
     }
+    val saveCopy = rememberSaveCopy()
+    val requestNotifications = rememberNotificationRequest()
 
-    // Progress notifications need the runtime permission on Android 13+; copies run without it.
-    val notificationPermission = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestPermission()
-    ) { }
-    val requestNotifications = {
-        if (FileTaskService.needsNotificationPermission(context)) {
-            notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
-        }
-    }
-    var pendingSaveName by rememberSaveable { mutableStateOf("") }
-    val saveLauncher = rememberLauncherForActivityResult(SaveCopyContract()) { target ->
-        val source = currentSelectedUri
-        if (target != null && source != null) {
-            viewModel.saveCopy(source, target, pendingSaveName)
-            requestNotifications()
-        }
-    }
     val suggestion = remember(detectionResult, fileName) {
         detectionResult?.let { NameCheck.check(fileName, it) }
     }
+    val inspection = detectionResult?.let {
+        FileInspector.Inspection(fileName.ifBlank { null }, viewModel.selectedSize, it)
+    }
+    val manualMimeValid = manualMime.isBlank() || MimeTypes.isValidInput(manualMime)
+    // A valid manual type overrides the detected one for Open, Open with and Share.
+    val openMime = manualMime.takeIf { it.isNotBlank() && manualMimeValid }
+        ?: detectionResult?.mime
+        ?: MimeTypes.OCTET_STREAM
+    val ready = !isPreparing && !isDetecting && detectionResult != null && pendingRename == null
+
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) { viewModel.refreshRecents() }
 
     LaunchedEffect(selectedUriString, selectionVersion) {
         val uriString = selectedUriString ?: run {
@@ -119,6 +160,7 @@ fun LauncherScreen(
         isPreparing = true
         try {
             val resolvedName = viewModel.queryFileName(uri)
+                ?: fileName.ifBlank { null }
                 ?: uri.lastPathSegment
                 ?: "Unknown file"
             if (selectedUriString != uriString || selectionVersion != version) {
@@ -144,41 +186,20 @@ fun LauncherScreen(
         }
     }
 
-    // The app chooser can only open while the screen is visible; events wait until then.
+    // The app chooser can only open while the screen is visible; requests wait until then.
     val lifecycleOwner = LocalLifecycleOwner.current
     LaunchedEffect(viewModel, lifecycleOwner) {
         lifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
             viewModel.autoOpenEvent.collect { request ->
                 if (currentSelectedUri == request.uri) {
-                    IntentRouter.open(
-                        context,
-                        request.uri,
-                        request.result.mime,
-                        request.fileName
-                    )
+                    IntentRouter.open(context, request.uri, request.result.mime, request.fileName)
                 }
             }
         }
     }
 
-    LaunchedEffect(viewModel, lifecycleOwner) {
-        lifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
-            viewModel.renamedCopies.collect { renamed ->
-                IntentRouter.open(
-                    context,
-                    renamed.copy,
-                    renamed.mime,
-                    renamed.fileName,
-                    recentUri = renamed.original
-                )
-            }
-        }
-    }
-
-    LaunchedEffect(viewModel) {
-        viewModel.messages.collect { message ->
-            Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
-        }
+    RenamedOpenEffect(viewModel.renamedOpener) { request, copy ->
+        IntentRouter.open(context, copy, request.mime, request.fileName, recentUri = request.source)
     }
 
     Scaffold(
@@ -187,7 +208,7 @@ fun LauncherScreen(
                 title = { Text("AnyFile Opener", fontWeight = FontWeight.Bold) },
                 actions = {
                     IconButton(onClick = onSettingsClick) {
-                        Icon(Icons.Default.Settings, contentDescription = "Settings")
+                        Icon(Icons.Outlined.Settings, contentDescription = "Settings")
                     }
                 }
             )
@@ -196,68 +217,65 @@ fun LauncherScreen(
         LazyColumn(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(padding)
                 .consumeWindowInsets(padding)
-                .imePadding()
-                .padding(horizontal = 16.dp),
+                .imePadding(),
+            contentPadding = PaddingValues(
+                start = 16.dp,
+                top = padding.calculateTopPadding() + 8.dp,
+                end = 16.dp,
+                bottom = padding.calculateBottomPadding() + 32.dp
+            ),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
             item {
-                FilePickerArea(
+                PickerCard(
+                    selected = selectedUri != null,
                     fileName = fileName,
-                    isDetecting = isDetecting,
+                    inspection = inspection,
+                    suggestion = suggestion,
+                    loading = isPreparing || isDetecting,
                     onClick = { filePicker.launch(arrayOf("*/*")) }
                 )
             }
 
             if (selectedUri != null) {
                 item {
-                    DetectionInfo(detectionResult, suggestion)
-                }
-
-                item {
-                    ActionButtons(
-                        enabled = !isPreparing && !isDetecting && detectionResult != null &&
-                            fileTask == null,
+                    FileActions(
+                        enabled = ready,
+                        lastApp = lastApp,
                         correctedName = suggestion?.suggestedName,
-                        onOpenNormal = {
-                            val mime = manualMime.takeIf { it.isNotBlank() } ?: detectionResult?.mime ?: "application/octet-stream"
-                            selectedUri?.let {
-                                IntentRouter.open(context, it, mime, fileName)
+                        onOpen = { IntentRouter.open(context, selectedUri, openMime, fileName) },
+                        onOpenWithApp = {
+                            lastApp?.let {
+                                IntentRouter.openWithApp(context, selectedUri, openMime, it.packageName, fileName)
                             }
                         },
                         onOpenCorrected = {
-                            val uri = selectedUri
                             val result = detectionResult
                             val hint = suggestion
-                            if (uri != null && result != null && hint != null) {
-                                viewModel.openWithCorrectedName(uri, hint.suggestedName, result.mime)
+                            if (result != null && hint != null) {
+                                viewModel.openWithCorrectedName(selectedUri, hint.suggestedName, result.mime)
                                 requestNotifications()
                             }
                         },
+                        onShare = { IntentRouter.share(context, selectedUri, openMime, fileName) },
                         onSave = {
                             val name = suggestion?.suggestedName ?: fileName.ifBlank { "file" }
-                            pendingSaveName = name
-                            saveLauncher.launch(
-                                SaveCopyContract.Request(name, MimeTypes.mimeForFileName(name))
-                            )
+                            saveCopy(selectedUri, name, viewModel.selectedSize)
                         },
-                        onShare = {
-                            val mime = manualMime.takeIf { it.isNotBlank() }
-                                ?: detectionResult?.mime
-                                ?: "application/octet-stream"
-                            selectedUri?.let {
-                                IntentRouter.share(context, it, mime, fileName)
-                            }
-                        },
-                        onOpenAs = { selectedUri?.let { onOpenAsClick(it) } },
-                        onInspect = { selectedUri?.let { onInspectClick(it) } }
+                        onDetails = { onDetailsClick(selectedUri, inspection) }
                     )
                 }
 
-                fileTask?.let { task ->
-                    item {
-                        FileTaskRow(task)
+                item {
+                    OutlinedButton(
+                        onClick = { onOpenAsClick(selectedUri, inspection) },
+                        enabled = ready,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Icon(Icons.Outlined.Category, contentDescription = null, modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text("Open as type…")
                     }
                 }
 
@@ -266,9 +284,14 @@ fun LauncherScreen(
                         expanded = advancedExpanded,
                         onToggle = { advancedExpanded = !advancedExpanded },
                         manualMime = manualMime,
+                        valid = manualMimeValid,
                         onMimeChange = { manualMime = it }
                     )
                 }
+            }
+
+            if (tasks.isNotEmpty()) {
+                item { TaskRows(tasks) }
             }
 
             item {
@@ -276,17 +299,13 @@ fun LauncherScreen(
                     onClick = onSystemFilesClick,
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Icon(
-                        Icons.Default.Folder,
-                        contentDescription = null,
-                        modifier = Modifier.size(18.dp)
-                    )
+                    Icon(Icons.Outlined.Folder, contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(Modifier.width(8.dp))
-                    Text("System File Manager")
+                    Text("System file manager")
                 }
             }
 
-            if (recentFiles.isNotEmpty()) {
+            if (recents.isNotEmpty()) {
                 item {
                     Row(
                         modifier = Modifier
@@ -295,34 +314,25 @@ fun LauncherScreen(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
-                            "Recent Files",
+                            "Recent files",
                             style = MaterialTheme.typography.titleMedium,
                             modifier = Modifier.weight(1f)
                         )
-                        TextButton(onClick = {
-                            RecentFileStore.clearRecentFilesAsync(context)
-                        }) {
+                        TextButton(onClick = { RecentFileStore.clearRecentFilesAsync(context) }) {
                             Text("Clear")
                         }
                     }
                 }
 
-                items(recentFiles, key = { it.uri }) { recent ->
-                    val readable = remember(recent.uri) {
-                        RecentFileStore.isReadable(context, recent.uri)
-                    }
+                items(recents, key = { it.file.uri }) { entry ->
                     RecentFileItem(
-                        recent = recent,
-                        expired = !readable,
-                        onRemove = {
-                            RecentFileStore.removeRecentFileAsync(context, recent.uri)
-                        },
+                        recent = entry.file,
+                        expired = !entry.readable,
+                        onRemove = { RecentFileStore.removeRecentFileAsync(context, entry.file.uri) },
                         onClick = {
-                            if (!readable) return@RecentFileItem
-                            val uri = Uri.parse(recent.uri)
                             viewModel.resetDetection()
-                            selectedUriString = uri.toString()
-                            fileName = recent.fileName
+                            selectedUriString = entry.file.uri
+                            fileName = entry.file.fileName
                             manualMime = ""
                             autoOpenPending = false
                             selectionVersion++
@@ -330,79 +340,62 @@ fun LauncherScreen(
                     )
                 }
             }
-
-            item { Spacer(Modifier.height(32.dp)) }
         }
     }
 }
 
+/** Before a file is picked: an invitation. After: what was detected. Tapping picks a file. */
 @Composable
-fun FilePickerArea(fileName: String, isDetecting: Boolean, onClick: () -> Unit) {
+private fun PickerCard(
+    selected: Boolean,
+    fileName: String,
+    inspection: FileInspector.Inspection?,
+    suggestion: NameCheck.Suggestion?,
+    loading: Boolean,
+    onClick: () -> Unit
+) {
     Card(
         onClick = onClick,
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(120.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
-        )
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow)
     ) {
-        Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        if (selected) {
+            Column(Modifier.padding(16.dp)) {
+                FileSummary(
+                    name = fileName.ifBlank { null },
+                    inspection = inspection,
+                    suggestion = suggestion,
+                    loading = loading
+                )
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "Tap to pick another file",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        } else {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 140.dp)
+                    .padding(24.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center
+            ) {
                 Icon(
-                    imageVector = if (fileName.isEmpty()) Icons.Default.AddCircle else Icons.Default.InsertDriveFile,
+                    Icons.Outlined.AddCircleOutline,
                     contentDescription = null,
-                    modifier = Modifier.size(48.dp),
+                    modifier = Modifier.size(40.dp),
                     tint = MaterialTheme.colorScheme.primary
                 )
+                Spacer(Modifier.height(12.dp))
+                Text("Pick a file", style = MaterialTheme.typography.titleMedium)
                 Text(
-                    text = if (fileName.isEmpty()) "Tap to pick a file" else fileName,
-                    style = MaterialTheme.typography.bodyLarge,
-                    fontWeight = if (fileName.isEmpty()) FontWeight.Normal else FontWeight.Medium,
-                    modifier = Modifier.padding(top = 8.dp)
-                )
-                if (isDetecting) {
-                    LinearProgressIndicator(
-                        modifier = Modifier
-                            .padding(top = 8.dp)
-                            .width(100.dp)
-                    )
-                }
-            }
-        }
-    }
-}
-
-@Composable
-fun DetectionInfo(result: MimeDetector.DetectionResult?, suggestion: NameCheck.Suggestion?) {
-    if (result == null) return
-
-    Row(
-        verticalAlignment = Alignment.CenterVertically,
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(8.dp))
-            .background(MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f))
-            .padding(12.dp)
-    ) {
-        Text(result.fileType.emoji, fontSize = 24.sp)
-        Spacer(Modifier.width(12.dp))
-        Column {
-            Text(
-                "${result.confidence.label} confidence • ${result.source.label}",
-                style = MaterialTheme.typography.labelMedium
-            )
-            Text(result.mime, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold)
-            Text(
-                result.evidence,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            if (suggestion != null) {
-                Text(
-                    suggestion.message,
+                    "Or choose AnyFile Opener in another app's \"Open with\" menu",
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.tertiary
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.Center
                 )
             }
         }
@@ -410,144 +403,68 @@ fun DetectionInfo(result: MimeDetector.DetectionResult?, suggestion: NameCheck.S
 }
 
 @Composable
-fun ActionButtons(
-    enabled: Boolean,
-    correctedName: String?,
-    onOpenNormal: () -> Unit,
-    onOpenCorrected: () -> Unit,
-    onSave: () -> Unit,
-    onShare: () -> Unit,
-    onOpenAs: () -> Unit,
-    onInspect: () -> Unit
+private fun AdvancedSection(
+    expanded: Boolean,
+    onToggle: () -> Unit,
+    manualMime: String,
+    valid: Boolean,
+    onMimeChange: (String) -> Unit
 ) {
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Button(
-            onClick = onOpenNormal,
-            enabled = enabled,
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Text("Open")
-        }
-        if (correctedName != null) {
-            OutlinedButton(
-                onClick = onOpenCorrected,
-                enabled = enabled,
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Text("Open as $correctedName", maxLines = 1, overflow = TextOverflow.Ellipsis)
-            }
-        }
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            FilledTonalButton(
-                onClick = onShare,
-                enabled = enabled,
-                modifier = Modifier.weight(1f)
-            ) {
-                Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(18.dp))
-                Spacer(Modifier.width(6.dp))
-                Text("Share")
-            }
-            FilledTonalButton(
-                onClick = onSave,
-                enabled = enabled,
-                modifier = Modifier.weight(1f)
-            ) {
-                Icon(Icons.Default.Save, contentDescription = null, modifier = Modifier.size(18.dp))
-                Spacer(Modifier.width(6.dp))
-                Text("Save copy")
-            }
-        }
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            OutlinedButton(
-                onClick = onOpenAs,
-                enabled = enabled,
-                modifier = Modifier.weight(1f)
-            ) {
-                Text("Open As…")
-            }
-            OutlinedButton(
-                onClick = onInspect,
-                enabled = enabled,
-                modifier = Modifier.weight(1f)
-            ) {
-                Text("Inspect")
-            }
-        }
-    }
-}
-
-@Composable
-fun FileTaskRow(task: LauncherViewModel.FileTask) {
-    val total = task.total?.takeIf { it > 0 }
-    Column(modifier = Modifier.fillMaxWidth()) {
-        Text(
-            if (total != null) {
-                "${task.label} ${formatFileSize(task.done)} / ${formatFileSize(total)}"
-            } else {
-                "${task.label} ${formatFileSize(task.done)}"
-            },
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        Spacer(Modifier.height(4.dp))
-        if (total != null) {
-            LinearProgressIndicator(
-                progress = { (task.done.toFloat() / total).coerceIn(0f, 1f) },
-                modifier = Modifier.fillMaxWidth()
-            )
-        } else {
-            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-        }
-    }
-}
-
-@Composable
-fun AdvancedSection(expanded: Boolean, onToggle: () -> Unit, manualMime: String, onMimeChange: (String) -> Unit) {
     Column {
         TextButton(onClick = onToggle, modifier = Modifier.fillMaxWidth()) {
-            Text(if (expanded) "Hide Advanced" else "Show Advanced Options")
+            Text(if (expanded) "Hide advanced options" else "Advanced options")
+            Spacer(Modifier.width(4.dp))
+            Icon(
+                if (expanded) Icons.Outlined.ExpandLess else Icons.Outlined.ExpandMore,
+                contentDescription = null,
+                modifier = Modifier.size(18.dp)
+            )
         }
         if (expanded) {
             OutlinedTextField(
                 value = manualMime,
                 onValueChange = onMimeChange,
-                label = { Text("Manual MIME Type") },
+                label = { Text("MIME type for Open and Share") },
+                supportingText = {
+                    Text(
+                        if (valid) {
+                            "Overrides the detected type"
+                        } else {
+                            "Enter type/subtype, for example video/mp4"
+                        }
+                    )
+                },
+                isError = !valid,
                 modifier = Modifier.fillMaxWidth(),
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
                 singleLine = true
             )
             Spacer(Modifier.height(8.dp))
-            MimeChips(onChipClick = onMimeChange)
+            MimeChips(selected = MimeTypes.normalize(manualMime), onChipClick = onMimeChange)
         }
     }
 }
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-fun MimeChips(onChipClick: (String) -> Unit) {
+private fun MimeChips(selected: String, onChipClick: (String) -> Unit) {
     val mimes = listOf(
-        "application/vnd.android.package-archive" to "APK",
+        MimeTypes.APK to "APK",
         "text/plain" to "TXT",
         "application/json" to "JSON",
         "application/pdf" to "PDF",
         "image/jpeg" to "JPG",
         "video/mp4" to "MP4",
-        "application/zip" to "ZIP"
+        MimeTypes.ZIP to "ZIP"
     )
-    
+
     FlowRow(
         modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         mimes.forEach { (mime, label) ->
             FilterChip(
-                selected = false,
+                selected = mime == selected,
                 onClick = { onChipClick(mime) },
                 label = { Text(label) }
             )
@@ -556,25 +473,24 @@ fun MimeChips(onChipClick: (String) -> Unit) {
 }
 
 @Composable
-fun RecentFileItem(
+private fun RecentFileItem(
     recent: RecentFile,
     expired: Boolean,
     onRemove: () -> Unit,
     onClick: () -> Unit
 ) {
-    val sdf = remember { SimpleDateFormat("MMM dd, HH:mm", Locale.getDefault()) }
+    val dateFormat = remember { SimpleDateFormat("MMM dd, HH:mm", Locale.getDefault()) }
     val subtitle = buildString {
         append(recent.mimeType)
-        append(" • ")
-        append(sdf.format(Date(recent.timestamp)))
-        if (expired) append(" • Expired")
+        append(" · ")
+        append(dateFormat.format(Date(recent.timestamp)))
+        if (expired) append(" · Expired")
     }
 
     ListItem(
         headlineContent = {
-            Text(
+            FileNameText(
                 recent.fileName,
-                maxLines = 1,
                 color = if (expired) {
                     MaterialTheme.colorScheme.onSurfaceVariant
                 } else {
@@ -585,6 +501,7 @@ fun RecentFileItem(
         supportingContent = {
             Text(
                 subtitle,
+                maxLines = 1,
                 color = if (expired) {
                     MaterialTheme.colorScheme.error
                 } else {
@@ -594,7 +511,7 @@ fun RecentFileItem(
         },
         leadingContent = {
             Icon(
-                imageVector = if (expired) Icons.Default.LinkOff else Icons.Default.History,
+                imageVector = if (expired) Icons.Outlined.LinkOff else Icons.Outlined.History,
                 contentDescription = null,
                 tint = if (expired) {
                     MaterialTheme.colorScheme.error
@@ -606,14 +523,12 @@ fun RecentFileItem(
         trailingContent = {
             IconButton(onClick = onRemove) {
                 Icon(
-                    Icons.Default.Close,
+                    Icons.Outlined.Close,
                     contentDescription = "Remove from recent",
                     tint = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
         },
-        modifier = Modifier
-            .clip(RoundedCornerShape(8.dp))
-            .clickable(enabled = !expired, onClick = onClick)
+        modifier = Modifier.clickable(enabled = !expired, onClick = onClick)
     )
 }

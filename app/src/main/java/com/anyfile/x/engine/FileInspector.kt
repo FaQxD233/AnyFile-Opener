@@ -3,6 +3,7 @@ package com.anyfile.x.engine
 import android.content.Context
 import android.net.Uri
 import com.anyfile.x.engine.utils.UriMetadata
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -41,10 +42,14 @@ object FileInspector {
         fallbackMime: String
     ): MimeDetector.DetectionResult {
         val resolver = context.applicationContext.contentResolver
-        return withIoTimeout(DETECTION_TIMEOUT_MS) {
-            MimeDetector.detect(resolver, uri, displayName, fallbackMime)
-        } ?: MimeDetector.detectFromName(displayName, fallbackMime).let {
-            it.copy(evidence = "Reading the file timed out; ${it.evidence}")
+        return try {
+            withIoTimeout(DETECTION_TIMEOUT_MS) {
+                MimeDetector.detect(resolver, uri, displayName, fallbackMime)
+            } ?: fromName(displayName, fallbackMime, "Reading the file timed out")
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            fromName(displayName, fallbackMime, "The file could not be read")
         }
     }
 
@@ -53,6 +58,11 @@ object FileInspector {
         val name = metadata.displayName ?: uri.lastPathSegment
         return Inspection(name, metadata.size, detect(context, uri, name, fallbackMime))
     }
+
+    private fun fromName(displayName: String?, fallbackMime: String, reason: String) =
+        MimeDetector.detectFromName(displayName, fallbackMime).let {
+            it.copy(evidence = "$reason; ${it.evidence}")
+        }
 
     /**
      * Runs [block] on the IO pool and waits at most [timeoutMs]. Returns null on

@@ -4,6 +4,8 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material.icons.Icons
@@ -32,7 +34,7 @@ fun SettingsScreen(
     val context = LocalContext.current
     var autoOpen by remember { mutableStateOf(prefsManager.autoOpen) }
     var defaultMime by remember { mutableStateOf(prefsManager.defaultMime) }
-    val defaultMimeIsValid = remember(defaultMime) { isValidMime(defaultMime) }
+    val defaultMimeIsValid = remember(defaultMime) { MimeTypes.isValidInput(defaultMime) }
 
     Scaffold(
         topBar = {
@@ -84,7 +86,7 @@ fun SettingsScreen(
                     value = defaultMime,
                     onValueChange = {
                         defaultMime = it
-                        if (isValidMime(it)) prefsManager.defaultMime = MimeTypes.normalize(it)
+                        if (MimeTypes.isValidInput(it)) prefsManager.defaultMime = MimeTypes.normalize(it)
                     },
                     label = { Text("Unknown-file fallback MIME") },
                     supportingText = {
@@ -186,15 +188,19 @@ fun SettingsScreen(
                         "How to use:\n" +
                         "1. Pick a file on the home screen, or share/open a file into this app.\n" +
                         "2. Wait for magic-byte detection (type, confidence, evidence).\n" +
-                        "3. Tap Open, Share, or Open As… (header open icon uses the exact detected MIME).\n\n" +
+                        "3. Tap Open, or pick another category under \"Open as type\".\n\n" +
                         "Tips:\n" +
-                        "• Advanced: type a custom MIME when detection is too broad.\n" +
-                        "• Share: send the file to MT Manager or another app.\n" +
-                        "• Save copy: store the file anywhere; a wrong extension is corrected.\n" +
+                        "• Open with <app>: skips the chooser and uses the app you last picked " +
+                        "for this kind of file.\n" +
                         "• Open as <name>: when the extension does not match the content, " +
                         "forward a copy with the right name to apps that check it.\n" +
-                        "• Inspect: hex or text preview (with encoding choice), checksums, APK details.\n" +
-                        "• Recent items may expire when the source only granted temporary access—remove them with ×."
+                        "• Save: store a copy anywhere; a wrong extension is corrected. Copies keep " +
+                        "running in the background with a progress notification.\n" +
+                        "• Share: send the file to MT Manager or another app.\n" +
+                        "• Details: path, size, modification time, checksums and APK details.\n" +
+                        "• Advanced: type a custom MIME when detection is too broad.\n" +
+                        "• Recent items may expire when the source only granted temporary access—remove them with ×.",
+                    modifier = Modifier.verticalScroll(rememberScrollState())
                 )
             },
             confirmButton = {
@@ -216,9 +222,6 @@ fun SettingsScreen(
         )
     }
 }
-
-private fun isValidMime(value: String): Boolean =
-    value.isNotBlank() && MimeTypes.isValid(MimeTypes.normalize(value))
 
 @Composable
 fun SectionHeader(title: String) {

@@ -13,10 +13,11 @@ import android.net.Uri
 import android.os.Build
 import android.util.Log
 import android.widget.Toast
-import androidx.appcompat.app.AlertDialog
 import com.anyfile.x.data.RecentFile
 import com.anyfile.x.data.RecentFileStore
+import com.anyfile.x.engine.MimeDetector
 import com.anyfile.x.engine.MimeTypes
+import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import java.util.UUID
 
 /** Fires ACTION_VIEW intents while preserving temporary URI access safely. */
@@ -64,8 +65,33 @@ object IntentRouter {
         recentUri
     )
 
+    /** Opens [uri] in [packageName], or shows the chooser when that app cannot open it. */
+    fun openWithApp(
+        context: Context,
+        uri: Uri,
+        mimeType: String,
+        packageName: String,
+        fileName: String? = null,
+        trackChooserResult: Boolean = false,
+        recentUri: Uri = uri
+    ): OpenResult {
+        val direct = openWithPackage(context, uri, mimeType, packageName, fileName, recentUri)
+        if (direct.status == OpenStatus.DIRECT_STARTED) return direct
+        return open(context, uri, mimeType, fileName, trackChooserResult, recentUri)
+    }
+
+    /** True when [packageName] has an activity that views [uri] as [mimeType]. */
+    fun canOpen(context: Context, uri: Uri, mimeType: String, packageName: String): Boolean = try {
+        val intent = createViewIntent(uri, MimeTypes.normalize(mimeType)).setPackage(packageName)
+        context.packageManager
+            .queryIntentActivities(intent, PackageManager.MATCH_DEFAULT_ONLY)
+            .isNotEmpty()
+    } catch (e: Exception) {
+        false
+    }
+
     /** Opens a URI in one known package without granting access to other handlers. */
-    fun openWithPackage(
+    private fun openWithPackage(
         context: Context,
         uri: Uri,
         mimeType: String,
@@ -211,7 +237,7 @@ object IntentRouter {
             return
         }
 
-        AlertDialog.Builder(activity)
+        MaterialAlertDialogBuilder(activity)
             .setTitle("No app found")
             .setMessage("No installed app can handle '$mimeType'. Copy the file URI instead?")
             .setPositiveButton("Copy URI") { _, _ ->
@@ -230,7 +256,17 @@ object IntentRouter {
             .apply()
     }
 
-    fun getLastApp(context: Context, mimeType: String): String? =
+    /**
+     * The app last picked in the chooser for this content: recorded for the exact type,
+     * or else for the category type that the "Open as" grid uses (any video, any audio).
+     */
+    fun lastAppFor(context: Context, result: MimeDetector.DetectionResult): String? {
+        getLastApp(context, result.mime)?.let { return it }
+        if (result.fileType == MimeDetector.FileType.UNKNOWN) return null
+        return getLastApp(context, MimeDetector.mimeOf(result.fileType))
+    }
+
+    private fun getLastApp(context: Context, mimeType: String): String? =
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             .getString(MimeTypes.normalize(mimeType), null)
 
