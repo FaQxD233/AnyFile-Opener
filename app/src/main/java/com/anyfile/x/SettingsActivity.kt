@@ -1,26 +1,24 @@
 package com.anyfile.x
 
 import android.os.Bundle
-import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.compose.runtime.getValue
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.activity.enableEdgeToEdge
+import androidx.appcompat.app.AppCompatActivity
 import com.anyfile.x.data.PrefsManager
 import com.anyfile.x.feature.settings.SettingsScreen
 import com.anyfile.x.ui.AnyFileOpenerTheme
-import com.anyfile.x.ui.ThemePreference
 
-class SettingsActivity : ComponentActivity() {
+/** An AppCompat activity so that changing the theme recreates it in the chosen mode. */
+class SettingsActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        
+        enableEdgeToEdge()
+
         val prefs = PrefsManager(this)
 
         setContent {
-            val themePref by prefs.themePreference.collectAsStateWithLifecycle(ThemePreference.SYSTEM_DEFAULT)
-            
-            AnyFileOpenerTheme(themePreference = themePref) {
+            AnyFileOpenerTheme {
                 SettingsScreen(
                     prefsManager = prefs,
                     onBackClick = { finish() }

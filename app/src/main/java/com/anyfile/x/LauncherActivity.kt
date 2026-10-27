@@ -4,10 +4,9 @@ import android.content.Intent
 import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
 import androidx.appcompat.app.AppCompatActivity
-import androidx.compose.runtime.getValue
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.anyfile.x.data.PrefsManager
 import com.anyfile.x.feature.inspect.InspectBottomSheet
 import com.anyfile.x.feature.launcher.LauncherScreen
@@ -15,7 +14,6 @@ import com.anyfile.x.feature.launcher.LauncherViewModel
 import com.anyfile.x.feature.openas.OpenAsBottomSheet
 import com.anyfile.x.routing.SystemFileManager
 import com.anyfile.x.ui.AnyFileOpenerTheme
-import com.anyfile.x.ui.ThemePreference
 
 /**
  * Modernized LauncherActivity using Jetpack Compose.
@@ -28,12 +26,11 @@ class LauncherActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        enableEdgeToEdge()
         prefs = PrefsManager(this)
 
         setContent {
-            val themePref by prefs.themePreference.collectAsStateWithLifecycle(ThemePreference.SYSTEM_DEFAULT)
-            
-            AnyFileOpenerTheme(themePreference = themePref) {
+            AnyFileOpenerTheme {
                 LauncherScreen(
                     viewModel = viewModel,
                     prefsManager = prefs,

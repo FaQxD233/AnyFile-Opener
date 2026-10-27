@@ -14,11 +14,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.anyfile.x.data.PrefsManager
 import com.anyfile.x.engine.MimeTypes
 import com.anyfile.x.ui.ThemePreference
-import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -26,7 +24,8 @@ fun SettingsScreen(
     prefsManager: PrefsManager,
     onBackClick: () -> Unit
 ) {
-    val themePreference by prefsManager.themePreference.collectAsStateWithLifecycle(initialValue = ThemePreference.SYSTEM_DEFAULT)
+    // Choosing a theme recreates the activity, which reads the new value again.
+    val themePreference = remember { prefsManager.themePreference }
     var showThemeDialog by remember { mutableStateOf(false) }
     var showAboutDialog by remember { mutableStateOf(false) }
     var showHelpDialog by remember { mutableStateOf(false) }
@@ -51,6 +50,8 @@ fun SettingsScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
+                .consumeWindowInsets(padding)
+                .imePadding()
         ) {
             item {
                 SectionHeader("BEHAVIOR")
@@ -58,9 +59,13 @@ fun SettingsScreen(
 
             item {
                 ListItem(
-                    headlineContent = { Text("Auto-open after high-confidence detect") },
+                    headlineContent = { Text("Auto-open files picked here") },
                     supportingContent = {
-                        Text("When detection is high-confidence, show the app chooser right away")
+                        Text(
+                            "When a file picked on the home screen is detected with high " +
+                                "confidence, show the app chooser right away. Files opened from " +
+                                "other apps always show the Open As sheet."
+                        )
                     },
                     trailingContent = {
                         Switch(
@@ -101,15 +106,7 @@ fun SettingsScreen(
             item {
                 ListItem(
                     headlineContent = { Text("Theme") },
-                    supportingContent = {
-                        Text(
-                            when (themePreference) {
-                                ThemePreference.SYSTEM_DEFAULT -> "System Default"
-                                ThemePreference.AMOLED -> "AMOLED Pure Black"
-                                ThemePreference.MATERIAL_YOU -> "Material You"
-                            }
-                        )
-                    },
+                    supportingContent = { Text(themePreference.label) },
                     modifier = Modifier.clickable { showThemeDialog = true }
                 )
             }
@@ -172,7 +169,10 @@ fun SettingsScreen(
         ThemeSelectionDialog(
             currentSelection = themePreference,
             onDismiss = { showThemeDialog = false },
-            prefsManager = prefsManager
+            onSelect = { selected ->
+                showThemeDialog = false
+                if (selected != themePreference) prefsManager.themePreference = selected
+            }
         )
     }
 
@@ -243,45 +243,20 @@ private fun openUrl(context: Context, url: String) {
 fun ThemeSelectionDialog(
     currentSelection: ThemePreference,
     onDismiss: () -> Unit,
-    prefsManager: PrefsManager
+    onSelect: (ThemePreference) -> Unit
 ) {
-    val scope = rememberCoroutineScope()
-    
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Select Theme") },
+        title = { Text("Theme") },
         text = {
             Column {
-                ThemeOption(
-                    label = "System Default",
-                    selected = currentSelection == ThemePreference.SYSTEM_DEFAULT,
-                    onClick = {
-                        scope.launch {
-                            prefsManager.setThemePreference(ThemePreference.SYSTEM_DEFAULT)
-                            onDismiss()
-                        }
-                    }
-                )
-                ThemeOption(
-                    label = "AMOLED Pure Black",
-                    selected = currentSelection == ThemePreference.AMOLED,
-                    onClick = {
-                        scope.launch {
-                            prefsManager.setThemePreference(ThemePreference.AMOLED)
-                            onDismiss()
-                        }
-                    }
-                )
-                ThemeOption(
-                    label = "Material You",
-                    selected = currentSelection == ThemePreference.MATERIAL_YOU,
-                    onClick = {
-                        scope.launch {
-                            prefsManager.setThemePreference(ThemePreference.MATERIAL_YOU)
-                            onDismiss()
-                        }
-                    }
-                )
+                ThemePreference.entries.forEach { option ->
+                    ThemeOption(
+                        label = option.label,
+                        selected = option == currentSelection,
+                        onClick = { onSelect(option) }
+                    )
+                }
             }
         },
         confirmButton = {

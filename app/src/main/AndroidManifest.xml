@@ -25,6 +25,7 @@
     </queries>
 
     <application
+        android:name="com.anyfile.x.AnyFileApp"
         android:allowBackup="true"
         android:icon="@drawable/ic_launcher"
         android:roundIcon="@drawable/ic_launcher_round"
@@ -36,7 +37,8 @@
             android:name="com.anyfile.x.LauncherActivity"
             android:exported="true"
             android:label="AnyFile Opener"
-            android:theme="@style/Theme.OpenBridge.Launcher">
+            android:theme="@style/Theme.OpenBridge.Launcher"
+            android:windowSoftInputMode="adjustResize">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
@@ -76,7 +78,8 @@
             android:name="com.anyfile.x.SettingsActivity"
             android:exported="false"
             android:label="Settings"
-            android:theme="@style/Theme.OpenBridge.Launcher" />
+            android:theme="@style/Theme.OpenBridge.Launcher"
+            android:windowSoftInputMode="adjustResize" />
 
         <receiver
             android:name="com.anyfile.x.widget.FolderWidgetProvider"

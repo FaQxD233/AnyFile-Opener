@@ -1,5 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <!-- Match the Compose color scheme in ui/Theme.kt; values-night holds the dark ones. -->
+    <color name="window_background">#FBFAFF</color>
+    <color name="brand_primary">#1F1E33</color>
+
     <!-- Backgrounds -->
     <color name="surface">#0A0A0E</color>
     <color name="surface_container_low">#111118</color>
