@@ -92,9 +92,7 @@ class InspectBottomSheet : BottomSheetDialogFragment() {
         }
         binding.btnSave.setOnClickListener {
             val current = inspection ?: return@setOnClickListener
-            saveAction.start(uri, saveName ?: "file", current.size, progress) { busy ->
-                _binding?.btnSave?.isEnabled = !busy
-            }
+            saveAction.start(uri, saveName ?: "file", current.size)
         }
         binding.btnChecksums.setOnClickListener {
             showChecksums(appContext, uri, inspection?.size)

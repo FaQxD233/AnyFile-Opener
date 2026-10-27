@@ -6,14 +6,19 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.anyfile.x.engine.FileInspector
 import com.anyfile.x.engine.MimeDetector
-import com.anyfile.x.files.FileBridge
-import com.anyfile.x.files.FileExporter
+import com.anyfile.x.tasks.FileTasks
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.mapNotNull
+import kotlinx.coroutines.flow.receiveAsFlow
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
 class LauncherViewModel(application: Application) : AndroidViewModel(application) {
@@ -41,22 +46,25 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
     private val _isDetecting = MutableStateFlow(false)
     val isDetecting: StateFlow<Boolean> = _isDetecting
 
-    // Events that should only be handled once (like auto-opening)
-    private val _autoOpenEvent = MutableSharedFlow<AutoOpenRequest>(replay = 0)
-    val autoOpenEvent: SharedFlow<AutoOpenRequest> = _autoOpenEvent
+    // One-shot events wait in channels until the screen collects them, also across rotation.
+    private val _autoOpenEvent = Channel<AutoOpenRequest>(Channel.BUFFERED)
+    val autoOpenEvent: Flow<AutoOpenRequest> = _autoOpenEvent.receiveAsFlow()
     private var detectionJob: Job? = null
     private var detectionGeneration = 0L
 
-    private val _fileTask = MutableStateFlow<FileTask?>(null)
-    val fileTask: StateFlow<FileTask?> = _fileTask
+    /** The first background copy that is still running, if any. */
+    val fileTask: StateFlow<FileTask?> = FileTasks.tasks
+        .map { tasks -> tasks.firstOrNull()?.let { FileTask(it.kind.verb, it.done, it.total) } }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
 
-    private val _messages = MutableSharedFlow<String>(extraBufferCapacity = 4)
-    val messages: SharedFlow<String> = _messages
+    private val _messages = Channel<String>(Channel.BUFFERED)
+    val messages: Flow<String> = _messages.receiveAsFlow()
 
-    private val _renamedCopies = MutableSharedFlow<RenamedCopy>(extraBufferCapacity = 1)
-    val renamedCopies: SharedFlow<RenamedCopy> = _renamedCopies
+    private val _renamedCopies = Channel<RenamedCopy>(Channel.BUFFERED)
+    val renamedCopies: Flow<RenamedCopy> = _renamedCopies.receiveAsFlow()
 
-    private var fileTaskJob: Job? = null
+    /** The renamed copy being prepared; abandoned when this screen goes away for good. */
+    private var renameTaskId: Long? = null
 
     /** Size of the selected file when its provider reports one. */
     var selectedSize: Long? = null
@@ -81,7 +89,7 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
                     if (triggerAutoOpen &&
                         result.confidence == MimeDetector.DetectionConfidence.HIGH
                     ) {
-                        _autoOpenEvent.emit(
+                        _autoOpenEvent.send(
                             AutoOpenRequest(uri, fileName ?: uri.lastPathSegment ?: "Unknown file", result)
                         )
                     }
@@ -116,36 +124,30 @@ class LauncherViewModel(application: Application) : AndroidViewModel(application
         return metadata.displayName
     }
 
-    /** Copies [source] into the document the user created; survives rotation. */
-    fun saveCopy(source: Uri, target: Uri) = runFileTask("Saving") { onProgress ->
-        FileExporter.export(getApplication<Application>(), source, target, selectedSize, onProgress)
-        _messages.emit("Copy saved")
+    /** Copies [source] into the document the user created, in the background. */
+    fun saveCopy(source: Uri, target: Uri, fileName: String) {
+        FileTasks.save(getApplication(), source, target, fileName, selectedSize)
     }
 
     /** Prepares a cached copy named [fileName]; the screen opens it from [renamedCopies]. */
-    fun openWithCorrectedName(source: Uri, fileName: String, mime: String) =
-        runFileTask("Preparing") { onProgress ->
-            val copy = FileBridge.copy(getApplication<Application>(), source, fileName, selectedSize, onProgress)
-            _renamedCopies.emit(RenamedCopy(source, copy, fileName, mime))
-        }
-
-    private fun runFileTask(
-        label: String,
-        block: suspend (onProgress: (Long, Long?) -> Unit) -> Unit
-    ) {
-        if (fileTaskJob?.isActive == true) return
-        val total = selectedSize
-        fileTaskJob = viewModelScope.launch {
-            _fileTask.value = FileTask(label, 0, total)
-            try {
-                block { done, size -> _fileTask.value = FileTask(label, done, size) }
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                _messages.emit("$label failed${e.message?.let { ": $it" }.orEmpty()}")
-            } finally {
-                _fileTask.value = null
+    fun openWithCorrectedName(source: Uri, fileName: String, mime: String) {
+        if (renameTaskId != null) return
+        val id = FileTasks.prepare(getApplication(), source, fileName, selectedSize)
+        renameTaskId = id
+        viewModelScope.launch {
+            val result = FileTasks.results.mapNotNull { it[id] }.first()
+            FileTasks.claim(id)
+            renameTaskId = null
+            when (result) {
+                is FileTasks.Result.Prepared ->
+                    _renamedCopies.send(RenamedCopy(source, result.copy, fileName, mime))
+                is FileTasks.Result.Failed -> _messages.send("Preparing failed: ${result.message}")
+                FileTasks.Result.Cancelled -> Unit
             }
         }
+    }
+
+    override fun onCleared() {
+        renameTaskId?.let(FileTasks::abandon)
     }
 }

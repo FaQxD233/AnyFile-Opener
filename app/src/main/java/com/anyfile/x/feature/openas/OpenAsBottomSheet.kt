@@ -208,7 +208,7 @@ class OpenAsBottomSheet : BottomSheetDialogFragment() {
     private fun saveCopy() {
         val uri = workingUri ?: return
         val name = suggestion?.suggestedName ?: fileName ?: "file"
-        saveAction.start(uri, name, fileSize, progress, ::setBusy)
+        saveAction.start(uri, name, fileSize)
     }
 
     private fun inspect() {

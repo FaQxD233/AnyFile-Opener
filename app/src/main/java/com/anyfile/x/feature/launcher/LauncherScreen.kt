@@ -1,5 +1,6 @@
 package com.anyfile.x.feature.launcher
 
+import android.Manifest
 import android.net.Uri
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -21,12 +22,15 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.repeatOnLifecycle
 import com.anyfile.x.data.PrefsManager
 import com.anyfile.x.data.RecentFile
 import com.anyfile.x.data.RecentFileStore
@@ -36,6 +40,7 @@ import com.anyfile.x.engine.NameCheck
 import com.anyfile.x.feature.common.SaveCopyContract
 import com.anyfile.x.feature.common.formatFileSize
 import com.anyfile.x.routing.IntentRouter
+import com.anyfile.x.tasks.FileTaskService
 import java.text.SimpleDateFormat
 import java.util.*
 
@@ -81,9 +86,22 @@ fun LauncherScreen(
         }
     }
 
+    // Progress notifications need the runtime permission on Android 13+; copies run without it.
+    val notificationPermission = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { }
+    val requestNotifications = {
+        if (FileTaskService.needsNotificationPermission(context)) {
+            notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
+    }
+    var pendingSaveName by rememberSaveable { mutableStateOf("") }
     val saveLauncher = rememberLauncherForActivityResult(SaveCopyContract()) { target ->
         val source = currentSelectedUri
-        if (target != null && source != null) viewModel.saveCopy(source, target)
+        if (target != null && source != null) {
+            viewModel.saveCopy(source, target, pendingSaveName)
+            requestNotifications()
+        }
     }
     val suggestion = remember(detectionResult, fileName) {
         detectionResult?.let { NameCheck.check(fileName, it) }
@@ -126,28 +144,34 @@ fun LauncherScreen(
         }
     }
 
-    LaunchedEffect(viewModel) {
-        viewModel.autoOpenEvent.collect { request ->
-            if (currentSelectedUri == request.uri) {
-                IntentRouter.open(
-                    context,
-                    request.uri,
-                    request.result.mime,
-                    request.fileName
-                )
+    // The app chooser can only open while the screen is visible; events wait until then.
+    val lifecycleOwner = LocalLifecycleOwner.current
+    LaunchedEffect(viewModel, lifecycleOwner) {
+        lifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            viewModel.autoOpenEvent.collect { request ->
+                if (currentSelectedUri == request.uri) {
+                    IntentRouter.open(
+                        context,
+                        request.uri,
+                        request.result.mime,
+                        request.fileName
+                    )
+                }
             }
         }
     }
 
-    LaunchedEffect(viewModel) {
-        viewModel.renamedCopies.collect { renamed ->
-            IntentRouter.open(
-                context,
-                renamed.copy,
-                renamed.mime,
-                renamed.fileName,
-                recentUri = renamed.original
-            )
+    LaunchedEffect(viewModel, lifecycleOwner) {
+        lifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            viewModel.renamedCopies.collect { renamed ->
+                IntentRouter.open(
+                    context,
+                    renamed.copy,
+                    renamed.mime,
+                    renamed.fileName,
+                    recentUri = renamed.original
+                )
+            }
         }
     }
 
@@ -208,10 +232,12 @@ fun LauncherScreen(
                             val hint = suggestion
                             if (uri != null && result != null && hint != null) {
                                 viewModel.openWithCorrectedName(uri, hint.suggestedName, result.mime)
+                                requestNotifications()
                             }
                         },
                         onSave = {
                             val name = suggestion?.suggestedName ?: fileName.ifBlank { "file" }
+                            pendingSaveName = name
                             saveLauncher.launch(
                                 SaveCopyContract.Request(name, MimeTypes.mimeForFileName(name))
                             )
