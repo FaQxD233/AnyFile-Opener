@@ -1,8 +1,10 @@
 package com.anyfile.x.feature.settings
 
+import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.widget.Toast
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -15,6 +17,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import com.anyfile.x.data.PrefsManager
 import com.anyfile.x.engine.MimeTypes
@@ -129,18 +132,8 @@ fun SettingsScreen(
             item {
                 ListItem(
                     headlineContent = { Text("About") },
-                    supportingContent = { Text("Learn about AnyFile Opener") },
+                    supportingContent = { Text("Author, original project and source code") },
                     modifier = Modifier.clickable { showAboutDialog = true }
-                )
-            }
-
-            item {
-                ListItem(
-                    headlineContent = { Text("Buy me a coffee") },
-                    supportingContent = { Text("Support the developer ❤️") },
-                    modifier = Modifier.clickable {
-                        openUrl(context, "https://buymeacoffee.com/tapman")
-                    }
                 )
             }
 
@@ -182,27 +175,7 @@ fun SettingsScreen(
         AlertDialog(
             onDismissRequest = { showHelpDialog = false },
             title = { Text("Help & Guide") },
-            text = {
-                Text(
-                    "AnyFile Opener bridges hard-to-open files to the right app.\n\n" +
-                        "How to use:\n" +
-                        "1. Pick a file on the home screen, or share/open a file into this app.\n" +
-                        "2. Wait for magic-byte detection (type, confidence, evidence).\n" +
-                        "3. Tap Open, or pick another category under \"Open as type\".\n\n" +
-                        "Tips:\n" +
-                        "• Open with <app>: skips the chooser and uses the app you last picked " +
-                        "for this kind of file.\n" +
-                        "• Open as <name>: when the extension does not match the content, " +
-                        "forward a copy with the right name to apps that check it.\n" +
-                        "• Save: store a copy anywhere; a wrong extension is corrected. Copies keep " +
-                        "running in the background with a progress notification.\n" +
-                        "• Share: send the file to MT Manager or another app.\n" +
-                        "• Details: path, size, modification time, checksums and APK details.\n" +
-                        "• Advanced: type a custom MIME when detection is too broad.\n" +
-                        "• Recent items may expire when the source only granted temporary access—remove them with ×.",
-                    modifier = Modifier.verticalScroll(rememberScrollState())
-                )
-            },
+            text = { HelpContent() },
             confirmButton = {
                 TextButton(onClick = { showHelpDialog = false }) { Text("Got it") }
             }
@@ -214,11 +187,101 @@ fun SettingsScreen(
             onDismissRequest = { showAboutDialog = false },
             title = { Text("About AnyFile Opener") },
             text = {
-                Text("AnyFile Opener is a versatile utility designed to handle files that Android usually struggles with. It automatically identifies the correct file type using magic-byte detection and lets you override it manually to open files with any app you choose.\n\nCreated with ❤️ by Tapman")
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        "AnyFile Opener is a versatile utility designed to handle files that Android " +
+                            "usually struggles with. It automatically identifies the correct file type " +
+                            "using magic-byte detection and lets you override it manually to open files " +
+                            "with any app you choose."
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    LinkLine("Created by ", "FaQxD233", "https://github.com/FaQxD233")
+                    LinkLine("Forked from ", "tapman104/OpenBridge", "https://github.com/tapman104/OpenBridge")
+                    LinkLine("Repository: ", "AnyFile-Opener", "https://github.com/FaQxD233/AnyFile-Opener")
+                }
             },
             confirmButton = {
                 TextButton(onClick = { showAboutDialog = false }) { Text("OK") }
             }
+        )
+    }
+}
+
+@Composable
+private fun HelpContent() {
+    Column(
+        modifier = Modifier.verticalScroll(rememberScrollState()),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
+        Text(
+            "AnyFile Opener tells what a file really is from its content, then hands it to an app " +
+                "that can open it."
+        )
+        HelpSection(
+            title = "Open a file",
+            numbered = true,
+            items = listOf(
+                "Pick a file on the home screen, or choose AnyFile Opener in another app's " +
+                    "\"Open with\" or share menu.",
+                "Check the detected type. Confidence and evidence show how the type was found.",
+                "Tap Open, or pick another category under \"Open as type\" when the detected type " +
+                    "is not what you want."
+            )
+        )
+        HelpSection(
+            title = "Actions",
+            items = listOf(
+                "Open with <app>: opens the file directly in the app you last picked for this " +
+                    "kind of file.",
+                "Open as <name>: when the extension does not match the content, forwards a copy " +
+                    "with the right name to apps that go by the extension.",
+                "Save: stores a copy anywhere, with a wrong extension corrected. Copies keep " +
+                    "running in the background with a progress notification.",
+                "Share: sends the file to another app, such as a file manager.",
+                "Details: path, size, modification time, checksums and, for APKs, package details."
+            )
+        )
+        HelpSection(
+            title = "Good to know",
+            items = listOf(
+                "Several shared files open one after another; skip a file or cancel the rest.",
+                "Advanced options on the home screen let you type a MIME type yourself.",
+                "Recent files expire when the source app only granted temporary access; remove " +
+                    "them with ×.",
+                "The Files widget opens the system file manager from the home screen."
+            )
+        )
+    }
+}
+
+@Composable
+private fun HelpSection(title: String, items: List<String>, numbered: Boolean = false) {
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Text(
+            title,
+            style = MaterialTheme.typography.titleSmall,
+            color = MaterialTheme.colorScheme.onSurface
+        )
+        items.forEachIndexed { index, item ->
+            Row {
+                Text(if (numbered) "${index + 1}." else "•", modifier = Modifier.width(20.dp))
+                Text(item)
+            }
+        }
+    }
+}
+
+/** "Created by FaQxD233", where the second part opens [url] in the browser. */
+@Composable
+private fun LinkLine(prefix: String, label: String, url: String) {
+    val context = LocalContext.current
+    Row {
+        Text(prefix)
+        Text(
+            text = label,
+            color = MaterialTheme.colorScheme.primary,
+            textDecoration = TextDecoration.Underline,
+            modifier = Modifier.clickable(onClickLabel = "Open in browser") { openUrl(context, url) }
         )
     }
 }
@@ -235,10 +298,9 @@ fun SectionHeader(title: String) {
 
 private fun openUrl(context: Context, url: String) {
     try {
-        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
-        context.startActivity(intent)
-    } catch (e: Exception) {
-        // Handle error
+        context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+    } catch (e: ActivityNotFoundException) {
+        Toast.makeText(context, "No browser found", Toast.LENGTH_SHORT).show()
     }
 }
 
