@@ -21,17 +21,14 @@
                 android:mimeType="*/*"
                 android:scheme="file" />
         </intent>
-        <intent>
-            <action android:name="android.intent.action.SEND" />
-            <data android:mimeType="*/*" />
-        </intent>
-        <package android:name="com.android.documentsui" />
-        <package android:name="com.google.android.documentsui" />
     </queries>
 
+    <!-- Backups leave out recent files: their URI grants do not survive a restore. -->
     <application
         android:name="com.anyfile.x.AnyFileApp"
         android:allowBackup="true"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="@xml/backup_rules"
         android:icon="@drawable/ic_launcher"
         android:roundIcon="@drawable/ic_launcher_round"
         android:label="AnyFile Opener"
@@ -56,14 +53,13 @@
             android:excludeFromRecents="true"
             android:theme="@style/Theme.OpenBridge.Transparent">
 
-            <intent-filter android:priority="1">
+            <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="content" />
                 <data android:scheme="file" />
                 <data android:mimeType="*/*" />
-                <data android:mimeType="application/octet-stream" />
             </intent-filter>
 
             <intent-filter>
@@ -89,15 +85,23 @@
         <receiver
             android:name="com.anyfile.x.widget.FolderWidgetProvider"
             android:exported="false"
-            android:label="Android Folder Shortcut">
+            android:label="Files shortcut">
             <intent-filter>
                 <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
-                <action android:name="com.anyfile.x.action.OPEN_FOLDER" />
             </intent-filter>
             <meta-data
                 android:name="android.appwidget.provider"
                 android:resource="@xml/folder_widget_info" />
         </receiver>
+
+        <!-- Widget tap target: opens the system file manager and closes at once. -->
+        <activity
+            android:name="com.anyfile.x.widget.FolderShortcutActivity"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:noHistory="true"
+            android:taskAffinity=""
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
 
         <receiver
             android:name="com.anyfile.x.routing.ChooserResultReceiver"

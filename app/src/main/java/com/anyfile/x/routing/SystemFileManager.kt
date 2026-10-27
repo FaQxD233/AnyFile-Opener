@@ -9,7 +9,10 @@ object SystemFileManager {
 
     private const val PRIMARY_ROOT = "content://com.android.externalstorage.documents/root/primary"
 
-    /** Tries public intent variants in order; returns false when none could start. */
+    /**
+     * Tries public intent variants in order; returns false when none could start. A file
+     * picker is no substitute: nothing would receive the file the user picks.
+     */
     fun open(context: Context): Boolean {
         val root = Uri.parse(PRIMARY_ROOT)
         val intents = listOf(
@@ -17,10 +20,6 @@ object SystemFileManager {
             Intent(Intent.ACTION_VIEW).apply {
                 setDataAndType(root, "vnd.android.document/root")
                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            },
-            Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
-                addCategory(Intent.CATEGORY_OPENABLE)
-                type = "*/*"
             }
         )
 

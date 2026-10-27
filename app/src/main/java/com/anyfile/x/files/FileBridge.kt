@@ -59,6 +59,11 @@ object FileBridge {
         FileProvider.getUriForFile(appContext, "${appContext.packageName}.files", target)
     }
 
+    /** Deletes copies older than a day; called at startup and before each new copy. */
+    fun pruneExpired(context: Context) {
+        prune(File(context.applicationContext.cacheDir, DIRECTORY))
+    }
+
     private fun prune(root: File) {
         val cutoff = System.currentTimeMillis() - MAX_AGE_MS
         root.listFiles()?.forEach { folder ->

@@ -4,6 +4,8 @@
     <color name="window_background">#FBFAFF</color>
     <color name="brand_primary">#1F1E33</color>
 
-    <!-- Home screen widget background (bg_bottom_sheet) -->
-    <color name="surface_container_low">#111118</color>
+    <!-- Home screen widget: the same in light and dark, so it reads on any wallpaper. -->
+    <color name="widget_background">#1F1E33</color>
+    <color name="widget_icon">#E3E1F7</color>
+    <color name="widget_text">#E5E3F0</color>
 </resources>

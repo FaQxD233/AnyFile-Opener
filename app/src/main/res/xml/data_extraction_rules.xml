@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Android 12+. Recent files hold URI grants that a restore cannot bring back, and
+     chooser requests only matter while the app is running. -->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="file" path="datastore/recent_files.preferences_pb" />
+        <exclude domain="sharedpref" path="chooser_requests.xml" />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="file" path="datastore/recent_files.preferences_pb" />
+        <exclude domain="sharedpref" path="chooser_requests.xml" />
+    </device-transfer>
+</data-extraction-rules>

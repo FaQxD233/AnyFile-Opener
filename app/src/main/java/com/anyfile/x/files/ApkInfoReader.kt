@@ -35,6 +35,15 @@ object ApkInfoReader {
     )
 
     private const val DIRECTORY = "apk-info"
+    private const val LEFTOVER_AGE_MS = 60L * 60 * 1000
+
+    /** Removes temporary copies that a killed process could not delete. */
+    fun clearLeftovers(context: Context) {
+        val cutoff = System.currentTimeMillis() - LEFTOVER_AGE_MS
+        File(context.applicationContext.cacheDir, DIRECTORY).listFiles()?.forEach { file ->
+            if (file.lastModified() < cutoff) file.delete()
+        }
+    }
 
     suspend fun read(
         context: Context,
