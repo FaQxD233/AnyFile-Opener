@@ -11,7 +11,7 @@ import androidx.fragment.app.FragmentManager
 import androidx.lifecycle.lifecycleScope
 import com.anyfile.x.feature.openas.OpenAsBottomSheet
 import com.anyfile.x.routing.ChooserRequestStore
-import java.util.ArrayDeque
+import com.anyfile.x.routing.FileQueue
 import java.util.LinkedHashSet
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -19,13 +19,12 @@ import kotlinx.coroutines.launch
 
 /**
  * Transparent entry point that processes VIEW/SEND files as a sequential queue.
- * It has no content view of its own: the queue is shown as View-based sheets.
+ * It has no content view of its own: the queue is shown as bottom sheets, and
+ * [FileQueue] decides what follows each sheet.
  */
 class MainActivity : AppCompatActivity() {
 
-    private val pendingUris = ArrayDeque<Uri>()
-    private var totalFiles = 0
-    private var processedFiles = 0
+    private val queue = FileQueue()
     private var waitingForExternalReturn = false
     private var showNextWhenSheetIsRemoved = false
     private var pendingChooserRequestId: String? = null
@@ -59,11 +58,13 @@ class MainActivity : AppCompatActivity() {
         if (savedInstanceState == null) {
             handleIntent(intent)
         } else {
-            savedInstanceState.getStringArrayList(STATE_PENDING_URIS)
-                .orEmpty()
-                .forEach { pendingUris.add(Uri.parse(it)) }
-            totalFiles = savedInstanceState.getInt(STATE_TOTAL_FILES, pendingUris.size)
-            processedFiles = savedInstanceState.getInt(STATE_PROCESSED_FILES, 0)
+            queue.restore(
+                FileQueue.Snapshot(
+                    pending = savedInstanceState.getStringArrayList(STATE_PENDING_URIS).orEmpty(),
+                    total = savedInstanceState.getInt(STATE_TOTAL_FILES, 0),
+                    processed = savedInstanceState.getInt(STATE_PROCESSED_FILES, 0)
+                )
+            )
             waitingForExternalReturn = savedInstanceState.getBoolean(
                 STATE_WAITING_FOR_EXTERNAL_RETURN,
                 false
@@ -107,12 +108,10 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
-        outState.putStringArrayList(
-            STATE_PENDING_URIS,
-            ArrayList(pendingUris.map(Uri::toString))
-        )
-        outState.putInt(STATE_TOTAL_FILES, totalFiles)
-        outState.putInt(STATE_PROCESSED_FILES, processedFiles)
+        val snapshot = queue.snapshot()
+        outState.putStringArrayList(STATE_PENDING_URIS, ArrayList(snapshot.pending))
+        outState.putInt(STATE_TOTAL_FILES, snapshot.total)
+        outState.putInt(STATE_PROCESSED_FILES, snapshot.processed)
         outState.putBoolean(STATE_WAITING_FOR_EXTERNAL_RETURN, waitingForExternalReturn)
         outState.putBoolean(
             STATE_SHOW_NEXT_WHEN_SHEET_REMOVED,
@@ -125,24 +124,32 @@ class MainActivity : AppCompatActivity() {
     private fun handleIntent(intent: Intent) {
         ChooserRequestStore.clear(this, pendingChooserRequestId)
         pendingChooserRequestId = null
-        val extractedUris = extractUris(intent)
-        val uris = extractedUris.take(MAX_QUEUE_SIZE)
+        val uris = extractUris(intent)
         if (uris.isEmpty()) {
-            startLauncher()
+            if (intent.action == Intent.ACTION_SEND || intent.action == Intent.ACTION_SEND_MULTIPLE) {
+                // Shared text or links, not files.
+                Toast.makeText(this, "Nothing to open: no file was shared", Toast.LENGTH_SHORT).show()
+                finish()
+            } else {
+                startLauncher()
+            }
             return
         }
-        if (extractedUris.size > MAX_QUEUE_SIZE) {
+
+        // A sheet still showing belongs to the previous queue; its outcome must not
+        // advance the new one.
+        supportFragmentManager.findFragmentByTag(OPEN_AS_TAG)?.let { sheet ->
+            supportFragmentManager.beginTransaction().remove(sheet).commitNowAllowingStateLoss()
+        }
+
+        val dropped = queue.reset(uris.map(Uri::toString), MAX_QUEUE_SIZE)
+        if (dropped > 0) {
             Toast.makeText(
                 this,
                 "Only the first $MAX_QUEUE_SIZE files were added to the queue",
                 Toast.LENGTH_LONG
             ).show()
         }
-
-        pendingUris.clear()
-        pendingUris.addAll(uris)
-        totalFiles = uris.size
-        processedFiles = 0
         waitingForExternalReturn = false
         showNextWhenSheetIsRemoved = false
         showNextIfReady()
@@ -188,48 +195,37 @@ class MainActivity : AppCompatActivity() {
         }
 
     private fun handleSheetResult(outcome: String?, chooserRequestId: String?) {
-        when (outcome) {
-            OpenAsBottomSheet.OUTCOME_OPENED -> {
-                advanceQueue()
-                if (pendingUris.isEmpty()) {
-                    finish()
+        val next = when (outcome) {
+            OpenAsBottomSheet.OUTCOME_OPENED -> queue.onOpened()
+            OpenAsBottomSheet.OUTCOME_CHOOSER_LAUNCHED ->
+                queue.onChooserLaunched(tracked = !chooserRequestId.isNullOrBlank())
+            OpenAsBottomSheet.OUTCOME_SKIPPED -> queue.onSkipped()
+            OpenAsBottomSheet.OUTCOME_CANCELLED -> {
+                ChooserRequestStore.clear(this, pendingChooserRequestId)
+                pendingChooserRequestId = null
+                queue.onCancelled()
+            }
+            else -> return
+        }
+        proceed(next, chooserRequestId)
+    }
+
+    private fun proceed(next: FileQueue.Next, chooserRequestId: String? = null) {
+        when (next) {
+            FileQueue.Next.FINISH -> finish()
+            FileQueue.Next.WAIT_FOR_RETURN -> waitingForExternalReturn = true
+            FileQueue.Next.SHOW_NEXT -> {
+                if (supportFragmentManager.findFragmentByTag(OPEN_AS_TAG) != null) {
+                    showNextWhenSheetIsRemoved = true
                 } else {
-                    waitingForExternalReturn = true
+                    showNextIfReady()
                 }
             }
-
-            OpenAsBottomSheet.OUTCOME_CHOOSER_LAUNCHED -> {
-                if (chooserRequestId.isNullOrBlank()) {
-                    showNextWhenSheetIsRemoved = true
-                    return
-                }
+            FileQueue.Next.RESOLVE_CHOOSER -> {
                 pendingChooserRequestId = chooserRequestId
                 waitingForExternalReturn = false
                 if (isPostResumed) scheduleChooserResolution()
             }
-
-            OpenAsBottomSheet.OUTCOME_SKIPPED -> {
-                advanceQueue()
-                if (pendingUris.isEmpty()) {
-                    finish()
-                } else {
-                    showNextWhenSheetIsRemoved = true
-                }
-            }
-
-            OpenAsBottomSheet.OUTCOME_CANCELLED -> {
-                ChooserRequestStore.clear(this, pendingChooserRequestId)
-                pendingChooserRequestId = null
-                pendingUris.clear()
-                finish()
-            }
-        }
-    }
-
-    private fun advanceQueue() {
-        if (pendingUris.isNotEmpty()) {
-            pendingUris.removeFirst()
-            processedFiles++
         }
     }
 
@@ -239,11 +235,11 @@ class MainActivity : AppCompatActivity() {
         ) return
         if (supportFragmentManager.findFragmentByTag(OPEN_AS_TAG) != null) return
 
-        val uri = pendingUris.peekFirst() ?: return
+        val uri = queue.current?.let(Uri::parse) ?: return
         OpenAsBottomSheet.newInstance(
             uri = uri,
-            queuePosition = processedFiles + 1,
-            queueTotal = totalFiles,
+            queuePosition = queue.position,
+            queueTotal = queue.total,
             managedQueue = true
         ).show(supportFragmentManager, OPEN_AS_TAG)
     }
@@ -259,19 +255,7 @@ class MainActivity : AppCompatActivity() {
 
             val wasChosen = ChooserRequestStore.consumeWasChosen(this@MainActivity, requestId)
             pendingChooserRequestId = null
-            if (wasChosen) {
-                advanceQueue()
-                if (pendingUris.isEmpty()) {
-                    finish()
-                    return@launch
-                }
-            }
-
-            if (supportFragmentManager.findFragmentByTag(OPEN_AS_TAG) != null) {
-                showNextWhenSheetIsRemoved = true
-            } else {
-                showNextIfReady()
-            }
+            proceed(queue.onChooserResolved(wasChosen))
         }
     }
 
