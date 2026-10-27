@@ -14,8 +14,8 @@ Description: |-
   granted content URI to an application selected by the user.
 
   It also flags files whose extension does not match their content, saves copies
-  or forwards them under a corrected name, and provides a hex and text inspector
-  with encoding detection, checksums and APK details, a multi-file queue and
+  or forwards them under a corrected name, and shows file details (path, size,
+  modification time, checksums and APK details), with a multi-file queue and
   recent-file shortcuts.
 
 RepoType: git

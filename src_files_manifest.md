@@ -1,121 +1,113 @@
 # 📂 AnyFile X - Source Files Manifest & Architectural Guide
 
-Welcome to the **AnyFile X** Source Manifest. This document lists every file residing within the `src` directory, defining its location, architectural role, and primary features.
+This document lists the files under `app/src`, with their role in the app.
 
 ---
 
 ## 🗺️ Source Directory Structure
-
-Here is a visual overview of the `app/src` directory hierarchy:
 
 ```
 app/src
 ├── main/
 │   ├── AndroidManifest.xml
 │   ├── java/com/anyfile/x/
-│   │   ├── utils/
-│   │   │   └── ByteReader.kt
-│   │   ├── ChooserResultReceiver.kt
-│   │   ├── FileTypeAdapter.kt
-│   │   ├── FolderWidgetProvider.kt
-│   │   ├── InspectBottomSheet.kt
-│   │   ├── IntentRouter.kt
-│   │   ├── LauncherActivity.kt
-│   │   ├── LauncherScreen.kt
-│   │   ├── MainActivity.kt
-│   │   ├── MimeDetector.kt
-│   │   ├── OpenAsBottomSheet.kt
-│   │   ├── OpenBridgeViewModel.kt
-│   │   ├── PrefsManager.kt
-│   │   ├── RecentFile.kt
-│   │   ├── RecentFileStore.kt
-│   │   ├── SettingsActivity.kt
-│   │   ├── SettingsScreen.kt
-│   │   ├── Theme.kt
-│   │   └── ThemePreference.kt
+│   │   ├── AnyFileApp.kt, LauncherActivity.kt, MainActivity.kt, SettingsActivity.kt
+│   │   ├── data/       PrefsManager, RecentFile, RecentFileStore
+│   │   ├── engine/     MimeDetector, MimeTypes, NameCheck, FileInspector, ZipInspector,
+│   │   │               Ole2Inspector, ContainerAccess, TextEncoding, utils/
+│   │   ├── feature/
+│   │   │   ├── common/    shared Compose components and helpers
+│   │   │   ├── details/   details sheet
+│   │   │   ├── launcher/  home screen
+│   │   │   ├── openas/    "Open as" sheet
+│   │   │   └── settings/  settings screen
+│   │   ├── files/      ApkInfoReader, FileBridge, FileExporter, FileHasher, FileLocation, StreamPump
+│   │   ├── routing/    IntentRouter, FileQueue, ChooserRequestStore, ChooserResultReceiver, SystemFileManager
+│   │   ├── tasks/      FileTasks, FileTaskService
+│   │   ├── ui/         Theme, ThemePreference
+│   │   └── widget/     FolderWidgetProvider, FolderShortcutActivity
 │   └── res/
-│       ├── drawable/
-│       ├── layout/
-│       ├── values/
-│       └── xml/
-└── test/
-    └── java/com/anyfile/x/
-        └── MimeDetectorTest.kt
+│       ├── drawable/   launcher icon, widget background and icon, notification icon
+│       ├── layout/     widget_folder_shortcut.xml
+│       ├── values/, values-night/
+│       └── xml/        backup rules, FileProvider paths, widget info
+└── test/java/com/anyfile/x/   engine, hashing, timeout and queue tests
 ```
 
 ---
 
 ## ⚡ Core Source Files (`app/src/main/java/com/anyfile/x/`)
 
-| File Name | Architectural Role | Key Features & Implementation |
-| :--- | :--- | :--- |
-| **[`MimeDetector.kt`](file:///c:/Users/tapman/Desktop/open%20with%20apk/app/src/main/java/com/anyfile/x/MimeDetector.kt)** | **Core Detection Engine** | Inspects magic bytes (using a 33KB buffer) to identify true MIME types. Supports deep-peek ZIP analysis (APKs, Office files, EPUBs) and script shebang/syntax checks. |
-| **[`IntentRouter.kt`](file:///c:/Users/tapman/Desktop/open%20with%20apk/app/src/main/java/com/anyfile/x/IntentRouter.kt)** | **Intent Forwarder & Router** | Fires standard view intents with the resolved MIME type. Solves Android permission issues by pre-emptively granting read URI permissions to target handlers. |
-| **[`MainActivity.kt`](file:///c:/Users/tapman/Desktop/open%20with%20apk/app/src/main/java/com/anyfile/x/MainActivity.kt)** | **Transparent Entry-Point** | Dedicated gatekeeper activity that intercepts inbound file intents (`ACTION_VIEW`, `ACTION_SEND`, `ACTION_SEND_MULTIPLE`) and forwards them to the UI without holding state. |
-| **[`LauncherActivity.kt`](file:///c:/Users/tapman/Desktop/open%20with%20apk/app/src/main/java/com/anyfile/x/LauncherActivity.kt)** | **Dashboard Host Activity** | Entry point of the interactive UI. Manages life cycle events, configures settings, and launches system file dialog overrides. |
-| **[`LauncherScreen.kt`](file:///c:/Users/tapman/Desktop/open%20with%20apk/app/src/main/java/com/anyfile/x/LauncherScreen.kt)** | **Main Dashboard Composable** | Rich Jetpack Compose UI containing the file picker, detected MIME results panel, action buttons (Open, Inspect, Open Folder), custom overrides, and Recent Files. |
-| **[`OpenBridgeViewModel.kt`](file:///c:/Users/tapman/Desktop/open%20with%20apk/app/src/main/java/com/anyfile/x/OpenBridgeViewModel.kt)** | **UI State Controller** | Connects UI interactions with the detection logic. Scans files asynchronously on `Dispatchers.IO` using the safe, application-level `ContentResolver`. |
-| **[`InspectBottomSheet.kt`](file:///c:/Users/tapman/Desktop/open%20with%20apk/app/src/main/java/com/anyfile/x/InspectBottomSheet.kt)** | **Hex/ASCII Binary Viewer** | An inspection sheet that reads blocks of bytes incrementally (256/512 byte chunks) to display formatted Hex Dumps and printable ASCII previews side-by-side. |
-| **[`OpenAsBottomSheet.kt`](file:///c:/Users/tapman/Desktop/open%20with%20apk/app/src/main/java/com/anyfile/x/OpenAsBottomSheet.kt)** | **MIME Override Chooser** | Displays detected file properties and provides a grid of standard types (Video, Audio, Image, text, etc.) to force-open the file using a specific category. |
-| **[`ChooserResultReceiver.kt`](file:///c:/Users/tapman/Desktop/open%20with%20apk/app/src/main/java/com/anyfile/x/ChooserResultReceiver.kt)** | **Broadcast Receiver** | Listens to system chooser actions to record which application package was picked by the user for a specific MIME type. |
-| **[`FolderWidgetProvider.kt`](file:///c:/Users/tapman/Desktop/open%20with%20apk/app/src/main/java/com/anyfile/x/FolderWidgetProvider.kt)** | **App Widget Provider** | Powers the home screen shortcut widget to instantly trigger folder navigation to default storage directories. |
-| **[`PrefsManager.kt`](file:///c:/Users/tapman/Desktop/open%20with%20apk/app/src/main/java/com/anyfile/x/PrefsManager.kt)** | **Preference Layer** | Handles simple flags in `SharedPreferences` and modern flow-based UI settings (like selected theme mode) via Jetpack `DataStore`. |
-| **[`RecentFile.kt`](file:///c:/Users/tapman/Desktop/open%20with%20apk/app/src/main/java/com/anyfile/x/RecentFile.kt)** | **Data Model** | Serializable data class representing a recently opened file (URI, filename, custom MIME, and epoch timestamp). |
-| **[`RecentFileStore.kt`](file:///c:/Users/tapman/Desktop/open%20with%20apk/app/src/main/java/com/anyfile/x/RecentFileStore.kt)** | **Recents Database** | A Jetpack DataStore wrapper that persists a serialized JSON list containing the 10 most recently accessed files, maintaining sorting order. |
-| **[`SettingsActivity.kt`](file:///c:/Users/tapman/Desktop/open%20with%20apk/app/src/main/java/com/anyfile/x/SettingsActivity.kt)** | **Settings Activity Host** | A simple Composable wrapper that opens the settings UI matching the current user-defined theme. |
-| **[`SettingsScreen.kt`](file:///c:/Users/tapman/Desktop/open%20with%20apk/app/src/main/java/com/anyfile/x/SettingsScreen.kt)** | **Settings Dashboard UI** | Composable page containing settings options (theme switching dialog, help guides, application details, and donation links). |
-| **[`FileTypeAdapter.kt`](file:///c:/Users/tapman/Desktop/open%20with%20apk/app/src/main/java/com/anyfile/x/FileTypeAdapter.kt)** | **RecyclerView Adapter** | Binds file type options to their grid items in the traditional bottom sheet chooser layout. |
-| **[`Theme.kt`](file:///c:/Users/tapman/Desktop/open%20with%20apk/app/src/main/java/com/anyfile/x/Theme.kt)** | **Style customizer** | Handles dynamic material color schemes (Light, Dark, AMOLED Pure Black, and Android 12+ Material You dynamic color adaptation). |
-| **[`ThemePreference.kt`](file:///c:/Users/tapman/Desktop/open%20with%20apk/app/src/main/java/com/anyfile/x/ThemePreference.kt)** | **Theme Enum** | Enumeration defining style options: `SYSTEM_DEFAULT`, `AMOLED`, and `MATERIAL_YOU`. |
-| **[`utils/ByteReader.kt`](file:///c:/Users/tapman/Desktop/open%20with%20apk/app/src/main/java/com/anyfile/x/utils/ByteReader.kt)** | **Safe Byte Reader** | Helper that performs safe low-level stream offset skipping and reads from Uri objects. Safely catches errors and returns empty arrays. |
+### Entry points
 
----
+| File | Role |
+| :--- | :--- |
+| [`AnyFileApp.kt`](app/src/main/java/com/anyfile/x/AnyFileApp.kt) | Applies the light/dark choice before any screen starts and prunes expired cached copies. |
+| [`MainActivity.kt`](app/src/main/java/com/anyfile/x/MainActivity.kt) | Transparent handler for `ACTION_VIEW`, `ACTION_SEND` and `ACTION_SEND_MULTIPLE`; shows the queued files one sheet at a time. |
+| [`LauncherActivity.kt`](app/src/main/java/com/anyfile/x/LauncherActivity.kt) | Hosts the home screen and opens its sheets. |
+| [`SettingsActivity.kt`](app/src/main/java/com/anyfile/x/SettingsActivity.kt) | Hosts the settings screen. |
 
-## 🎨 Layout & Resource Files (`app/src/main/res/`)
+### Detection engine (`engine/`)
 
-AnyFile X leverages a hybrid configuration: XML layouts for complex bottom sheet designs and RecyclerView binds, and Jetpack Compose for the main screens.
+| File | Role |
+| :--- | :--- |
+| [`MimeDetector.kt`](app/src/main/java/com/anyfile/x/engine/MimeDetector.kt) | Magic-byte detection from a 33 KB header, with confidence, source and evidence; text and script heuristics. |
+| [`ZipInspector.kt`](app/src/main/java/com/anyfile/x/engine/ZipInspector.kt) | Identifies APK, split-APK bundles, Office Open XML, EPUB/OpenDocument and JAR from ZIP entry names without inflating data. |
+| [`Ole2Inspector.kt`](app/src/main/java/com/anyfile/x/engine/Ole2Inspector.kt) | Identifies legacy Office files from OLE2 directory entries. |
+| [`ContainerAccess.kt`](app/src/main/java/com/anyfile/x/engine/ContainerAccess.kt) | Seekable or streaming access to a whole file for container checks. |
+| [`FileInspector.kt`](app/src/main/java/com/anyfile/x/engine/FileInspector.kt) | Metadata and detection under time limits, falling back to the file name. |
+| [`MimeTypes.kt`](app/src/main/java/com/anyfile/x/engine/MimeTypes.kt) | MIME constants, validation and extension knowledge. |
+| [`NameCheck.kt`](app/src/main/java/com/anyfile/x/engine/NameCheck.kt) | Flags extensions that do not fit the content and proposes a corrected name. |
+| [`TextEncoding.kt`](app/src/main/java/com/anyfile/x/engine/TextEncoding.kt) | Text encoding detection (BOM, UTF-16, UTF-8, GB18030) used by the text heuristics. |
+| `utils/` | Byte reading and searching, little-endian reads, and URI metadata (name, size, modification time, legacy path). |
 
-### 📐 1. Layouts (`res/layout/`)
-* **[`bottom_sheet_open_as.xml`](file:///c:/Users/tapman/Desktop/open%20with%20apk/app/src/main/res/layout/bottom_sheet_open_as.xml)**: Renders the Open As selection grid, display name headers, and the Quick Open chip.
-* **[`bottom_sheet_inspect.xml`](file:///c:/Users/tapman/Desktop/open%20with%20apk/app/src/main/res/layout/bottom_sheet_inspect.xml)**: Hosts the binary hex viewer scrolls, headers, and "Load More" controls.
-* **[`item_file_type.xml`](file:///c:/Users/tapman/Desktop/open%20with%20apk/app/src/main/res/layout/item_file_type.xml)**: Represents individual cells in the FileType chooser (emoji text + labels).
-* **[`widget_folder_shortcut.xml`](file:///c:/Users/tapman/Desktop/open%20with%20apk/app/src/main/res/layout/widget_folder_shortcut.xml)**: Layout for the home screen system folder widget.
+### Screens and sheets (`feature/`)
 
-### 🧭 2. App XML metadata (`res/xml/`)
-* **[`folder_widget_info.xml`](file:///c:/Users/tapman/Desktop/open%20with%20apk/app/src/main/res/xml/folder_widget_info.xml)**: Declares Android widget parameters (dimensions, initial layout, update frequencies).
+| File | Role |
+| :--- | :--- |
+| [`launcher/LauncherScreen.kt`](app/src/main/java/com/anyfile/x/feature/launcher/LauncherScreen.kt), [`LauncherViewModel.kt`](app/src/main/java/com/anyfile/x/feature/launcher/LauncherViewModel.kt) | Home screen: pick a file, see the detection, act on it, manual MIME override, recent files. |
+| [`openas/OpenAsBottomSheet.kt`](app/src/main/java/com/anyfile/x/feature/openas/OpenAsBottomSheet.kt), [`OpenAsContent.kt`](app/src/main/java/com/anyfile/x/feature/openas/OpenAsContent.kt), [`OpenAsViewModel.kt`](app/src/main/java/com/anyfile/x/feature/openas/OpenAsViewModel.kt) | One queued file: summary, actions, "Open as type" grid, skip and cancel; reports its outcome to `MainActivity`. |
+| [`details/DetailsBottomSheet.kt`](app/src/main/java/com/anyfile/x/feature/details/DetailsBottomSheet.kt), [`DetailsContent.kt`](app/src/main/java/com/anyfile/x/feature/details/DetailsContent.kt), [`DetailsViewModel.kt`](app/src/main/java/com/anyfile/x/feature/details/DetailsViewModel.kt) | Name, type, path or URI, size, modification time, checksums and APK details. |
+| [`settings/SettingsScreen.kt`](app/src/main/java/com/anyfile/x/feature/settings/SettingsScreen.kt) | Auto-open, fallback MIME, theme, help and about. |
+| [`common/ComposeBottomSheet.kt`](app/src/main/java/com/anyfile/x/feature/common/ComposeBottomSheet.kt) | Bottom sheet fragment with themed Compose content, opened expanded, not closable while busy. |
+| [`common/FileSummary.kt`](app/src/main/java/com/anyfile/x/feature/common/FileSummary.kt), [`FileActions.kt`](app/src/main/java/com/anyfile/x/feature/common/FileActions.kt), [`FileNameText.kt`](app/src/main/java/com/anyfile/x/feature/common/FileNameText.kt), [`TaskRows.kt`](app/src/main/java/com/anyfile/x/feature/common/TaskRows.kt) | Shared components: file summary and type icons, action buttons with `Open with <app>`, names that keep their extension, task progress rows. |
+| [`common/SaveCopy.kt`](app/src/main/java/com/anyfile/x/feature/common/SaveCopy.kt), [`RenamedOpener.kt`](app/src/main/java/com/anyfile/x/feature/common/RenamedOpener.kt) | Save a copy, and open under the corrected name, both through background tasks. |
+| [`common/InspectionArgs.kt`](app/src/main/java/com/anyfile/x/feature/common/InspectionArgs.kt), `Formatters.kt`, `SaveCopyContract.kt` | Passing a detection to a sheet, size formatting, the create-document contract. |
 
-### 🎨 3. Design Assets & Configs (`res/values/` & `res/drawable/`)
-* **`values/colors.xml` & `values/styles.xml`**: Defines XML application themes (including `Theme.OpenBridge.Transparent` for backgroundless main activity redirects).
-* **`drawable/` styles**: Configures clean, modern gradients (`bg_primary_gradient.xml`), card styles (`bg_card_sleek.xml`), and bottom sheet shapes.
+### Files, routing and tasks
+
+| File | Role |
+| :--- | :--- |
+| [`routing/IntentRouter.kt`](app/src/main/java/com/anyfile/x/routing/IntentRouter.kt) | Chooser and direct opening with URI grants, sharing, and the app last picked per type. |
+| [`routing/FileQueue.kt`](app/src/main/java/com/anyfile/x/routing/FileQueue.kt) | The incoming file queue and what follows each sheet outcome. |
+| `routing/ChooserRequestStore.kt`, `ChooserResultReceiver.kt` | Tell a picked app from a dismissed chooser; record the picked app and recent files. |
+| [`routing/SystemFileManager.kt`](app/src/main/java/com/anyfile/x/routing/SystemFileManager.kt) | Opens DocumentsUI at internal storage. |
+| [`tasks/FileTasks.kt`](app/src/main/java/com/anyfile/x/tasks/FileTasks.kt), [`FileTaskService.kt`](app/src/main/java/com/anyfile/x/tasks/FileTaskService.kt) | Background copies with progress, cancel and results; the foreground service with the progress notification. |
+| `files/FileBridge.kt`, `FileExporter.kt`, `StreamPump.kt` | Cached copies served by FileProvider, writing to a created document, the shared read loop. |
+| `files/FileHasher.kt`, `ApkInfoReader.kt`, `FileLocation.kt` | MD5/SHA-256, APK package details, readable path of a URI. |
+| `data/PrefsManager.kt`, `RecentFileStore.kt`, `RecentFile.kt` | Settings in SharedPreferences, recent files in DataStore. |
+| `ui/Theme.kt`, `ThemePreference.kt` | Color schemes and the System/Light/Dark choice. |
+| `widget/FolderWidgetProvider.kt`, `FolderShortcutActivity.kt` | Home screen widget and the activity it starts. |
 
 ---
 
 ## 🛡️ Manifest Configuration (`app/src/main/AndroidManifest.xml`)
 
-The [**`AndroidManifest.xml`**](file:///c:/Users/tapman/Desktop/open%20with%20apk/app/src/main/AndroidManifest.xml) acts as the routing blueprint:
-- **Scoped Storage**: Uses SAF and temporary URI grants without broad external-storage permissions.
-- **Intent Gateway (`MainActivity`)**: Intercepts generic file intents by binding to `ACTION_VIEW`, `ACTION_SEND`, and `ACTION_SEND_MULTIPLE` for `*/*` MIME types, allowing AnyFile X to act as a system-wide "Open With..." option.
-- **Package Visibility Queries**: Specifically queries package visibility for `com.android.documentsui` to enable direct folder jumping.
+- **Intent handling**: `MainActivity` handles `ACTION_VIEW` for content and file URIs, plus `ACTION_SEND` and `ACTION_SEND_MULTIPLE`, all for `*/*`.
+- **Package visibility**: `ACTION_VIEW` queries with a MIME type, so typed viewers are visible when listing handlers.
+- **Background copies**: `FileTaskService` is a `dataSync` foreground service; `POST_NOTIFICATIONS` shows its progress on Android 13+.
+- **Storage**: SAF and temporary URI grants only; copies are served by a non-exported `FileProvider`.
+- **Backups**: Recent files and chooser state are excluded (`data_extraction_rules.xml`, `backup_rules.xml`).
 
 ---
 
 ## 🧪 Test Suite (`app/src/test/java/com/anyfile/x/`)
 
-* **[`MimeDetectorTest.kt`](file:///c:/Users/tapman/Desktop/open%20with%20apk/app/src/test/java/com/anyfile/x/MimeDetectorTest.kt)**:
-  - **Unit Test Coverage**: Targets the `MimeDetector` logic.
-  - **Tested Capabilities**: Validates standard signatures for Video, Audio, Images, Documents, Archives, and complex Zip-based formats (APKs, EPUB, DOCX offsets) using custom-built mock headers.
-
----
-
-## 🔒 Architectural Stability Anchors
-
-AnyFile X features strict safeguarding to prevent common Android lifecycle/permission bugs:
-
-1. **Decoupled Lifecycle I/O** (Implemented in `LauncherViewModel.kt` & the bottom sheets):
-   Resource reading runs on `Dispatchers.IO`; view-bound work uses `viewLifecycleOwner.lifecycleScope` so dismissed sheets cannot update destroyed bindings.
-2. **Intent Integrity** (Implemented in `MainActivity.kt`):
-   The gatekeeper `MainActivity` holds no Compose or UI state. It handles the incoming intent immediately, showing the bottom sheet dialog on top of a transparent window, avoiding crashes or intent data drops during configuration changes.
-3. **Permission Bridging** (Implemented in `IntentRouter.kt`):
-   Read permission is attached to the selected launch intent and `ClipData`; unrelated chooser candidates are not granted access.
-4. **Signature Locking** (Implemented in `MimeDetector.kt`):
-   Performs deep recursive inspection of ZIP headers up to 30 files, specifically verifying manifests (`AndroidManifest.xml` for APK, etc.) to guarantee that generic ZIP archives are never misidentified.
+| File | Covers |
+| :--- | :--- |
+| `MimeDetectorTest.kt` | Signatures, header structure of short signatures, text heuristics, OLE2, HEIF brands. |
+| `ZipInspectorTest.kt` | APK, bundles, OpenXML, EPUB/OpenDocument, JAR, central directory and local-header walks. |
+| `NameCheckTest.kt` | Mismatch detection and corrected names. |
+| `TextEncodingTest.kt` | Encoding detection. |
+| `FileHasherTest.kt`, `FileInspectorTest.kt` | Digests and progress; time limits. |
+| `FileQueueTest.kt` | Queue order and the next step after each outcome. |

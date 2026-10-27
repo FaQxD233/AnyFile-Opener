@@ -7,6 +7,8 @@ Features:
 - ZIP container analysis (APK, XAPK/APKM/APKS bundles, EPUB, OpenDocument, Office) and legacy Office files
 - Advanced Intent Routing with robust URI permission bridging
 - Extension mismatch warnings, "Save copy" and "Open as" with a corrected file name
-- Hex and text inspector with encoding detection (UTF-8, GBK, UTF-16), checksums and APK details
+- File details: path, size, modification time, checksums and APK details
+- Saving and preparing copies keep running in the background with a progress notification
+- System, light and dark themes
 
 This app respects your privacy: it includes zero proprietary tracking, zero ads, and is completely free and open source.

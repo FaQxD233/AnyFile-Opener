@@ -9,9 +9,10 @@
 - **Binary Signature Detection**: Identifies files by their magic bytes (headers), not just unreliable extensions.
 - **Robust URI Forwarding**: Ensures target apps (like VLC, MX Player, or Installers) have proper permissions to read files from restricted folders.
 - **Universal Handler**: Registers for `*/*` to provide a fallback when the system is stumped.
-- **Inspector**: Hex/ASCII and text previews (with UTF-8/GBK/UTF-16 detection), MD5/SHA-256 checksums and APK details.
+- **File Details**: Path (or URI) with a copy button, size, modification time, MD5/SHA-256 checksums and APK details, including certificates replaced through key rotation.
 - **Extension Fixes**: Flags files whose extension does not match their content; save a copy or open them under the corrected name.
-- **Material You & AMOLED**: Personalized themes with dynamic coloring and pure black support.
+- **Light & Dark Themes**: System default, light or dark, built around a midnight `#1F1E33` palette.
+- **Background Copies**: Saving a copy, or preparing one under a corrected name, keeps running with a progress notification and a cancel action.
 - **Recent Files & Widgets**: Quick access to your history and system storage roots.
 
 ## 🖼 App Screenshot
@@ -39,12 +40,13 @@ skipped, or used to cancel the remaining queue.
 Open the app directly to:
 - **Pick a File**: Browse storage and manually select a file to open.
 - **Force MIME**: Manually type a MIME type (e.g., `application/pdf`) to force-open a mislabelled file.
-- **Inspect**: Check the header bytes or text of a file, compute checksums, and read APK details.
+- **Details**: See where the file is, its size and modification time, compute checksums, and read APK details.
+- **`Open with <app>`**: Skip the chooser and use the app last picked for this kind of file.
 - **Save Copy / Open As**: Store a copy anywhere, or forward one under the corrected file name.
 - **Detection Details**: Review confidence, detection source, and concrete evidence.
 
 ### 3. Home Screen Widget
-Add the **Storage Root** widget to your home screen for a one-tap shortcut to the system's internal storage provider.
+Add the **Files shortcut** widget to your home screen for a one-tap shortcut to the system file manager at internal storage.
 
 ---
 
@@ -81,10 +83,11 @@ To build without publishing, for example to verify a change, set
 - [x] URI Permission Bridging
 - [x] Deep peeking for ZIP/Office/ISO formats
 - [x] Recent Files History
-- [x] Binary Inspector UI (hex, text with encoding detection, checksums, APK details)
+- [x] File details sheet (path, size, modification time, checksums, APK details)
 - [x] Extension mismatch warnings, Save copy and corrected-name forwarding
 - [x] Home Screen Widgets
-- [x] Settings & Themes (Material You, AMOLED)
+- [x] Settings & Themes (system, light, dark)
+- [x] Background copies with a progress notification
 
 
 ---
