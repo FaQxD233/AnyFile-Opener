@@ -55,7 +55,7 @@ class MimeDetectorTest {
         "WEBP".toByteArray().copyInto(webp, 8)
         assertMime(webp, "image/webp")
         // BMP
-        assertMime("BM".toByteArray(), "image/bmp")
+        assertMime(bmpHeader(), "image/bmp")
         // TIFF LE
         assertMime(byteArrayOf(0x49, 0x49, 0x2A, 0x00), "image/tiff")
         // TIFF BE
@@ -231,6 +231,77 @@ class MimeDetectorTest {
         val bare = ByteArray(512)
         ole2Signature().copyInto(bare)
         assertEquals("application/vnd.ms-excel", MimeDetector.detectFromHeader(bare, "sheet.xls").mime)
+    }
+
+    @Test
+    fun shortSignaturesNeedTheirHeaderStructure() {
+        // "BM" alone starts ordinary text as well.
+        assertEquals("text/plain", detectText("BMW 3 series service log\nOil changed"))
+
+        assertMime(sfntHeader(), "font/ttf")
+        // Access databases share the TrueType version bytes.
+        val access = ByteArray(256)
+        bytes(0x00, 0x01, 0x00, 0x00).copyInto(access)
+        "Standard Jet DB".toByteArray().copyInto(access, 4)
+        val database = MimeDetector.detectFromHeader(access)
+        assertEquals(MimeDetector.FileType.UNKNOWN, database.fileType)
+        assertEquals(MimeDetector.DetectionSource.FALLBACK, database.source)
+    }
+
+    @Test
+    fun textHeuristicsNeedStructure() {
+        // Only the interpreter line of a script decides its language.
+        assertEquals(
+            "text/x-shellscript",
+            detectText("#!/bin/bash\n# starts the python server\npython3 app.py\n")
+        )
+        assertEquals("text/x-python", detectText("#!/usr/bin/env python3\nprint('hi')\n"))
+
+        assertEquals("text/plain", detectText("[General]\nname=demo\n"))
+        assertEquals("application/json", detectText("[{\"a\": 1}]"))
+        assertEquals("application/json", detectText("{\n  \"a\": 1\n}"))
+
+        assertEquals("text/plain", detectText("Note: buy milk\nThen call the plumber about the sink.\n"))
+        assertEquals("text/yaml", detectText("name: demo\nversion: 1\nitems:\n  - a\n  - b\n"))
+
+        assertEquals("text/plain", detectText("int main(int argc, char **argv) {\n  return 0;\n}\n"))
+        assertEquals("text/markdown", detectText("# Title\n\nSome **bold** text.\n"))
+    }
+
+    @Test
+    fun genericHeifBrandsUseCompatibleBrands() {
+        assertMime(ftypBox("mif1", "mif1", "avif", "miaf"), "image/avif")
+        assertMime(ftypBox("mif1", "mif1", "heic"), "image/heic")
+        assertMime(ftypBox("avif", "avif", "mif1"), "image/avif")
+    }
+
+    private fun detectText(text: String): String = MimeDetector.detectFromHeader(text.toByteArray()).mime
+
+    private fun bmpHeader(): ByteArray {
+        val header = ByteArray(54)
+        "BM".toByteArray().copyInto(header)
+        header[2] = 54
+        header[10] = 54
+        // BITMAPINFOHEADER size
+        header[14] = 40
+        return header
+    }
+
+    private fun sfntHeader(): ByteArray {
+        val header = ByteArray(64)
+        // Version 1.0, 11 tables, then the table directory starting with "GDEF".
+        bytes(0x00, 0x01, 0x00, 0x00, 0x00, 0x0B, 0x00, 0x80, 0x00, 0x03, 0x00, 0x30).copyInto(header)
+        "GDEF".toByteArray().copyInto(header, 12)
+        return header
+    }
+
+    private fun ftypBox(major: String, vararg compatible: String): ByteArray {
+        val box = ByteArray(16 + compatible.size * 4)
+        box[3] = box.size.toByte()
+        "ftyp".toByteArray().copyInto(box, 4)
+        major.toByteArray().copyInto(box, 8)
+        compatible.forEachIndexed { index, brand -> brand.toByteArray().copyInto(box, 16 + index * 4) }
+        return box
     }
 
     private fun assertMime(header: ByteArray, expectedMime: String) {

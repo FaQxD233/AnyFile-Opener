@@ -4,6 +4,7 @@ import android.content.ContentResolver
 import android.net.Uri
 import com.anyfile.x.engine.utils.ByteReader
 import com.anyfile.x.engine.utils.ByteSearch
+import com.anyfile.x.engine.utils.LittleEndian
 import java.util.Locale
 
 /** Magic-byte MIME detector with bounded container inspection. */
@@ -12,13 +13,25 @@ object MimeDetector {
     private const val ALL_MIME = MimeTypes.ANY
     private const val HEADER_BYTES = 33_000
     private const val TEXT_SAMPLE_BYTES = 2048
+    private const val MAX_SFNT_TABLES = 128
+    private const val MAX_FTYP_BYTES = 256
+    private const val YAML_SAMPLE_LINES = 20
     private val PDF_MARKER = "%PDF-".toByteArray(Charsets.US_ASCII)
     private val TORRENT_INFO = "4:infod".toByteArray(Charsets.US_ASCII)
     private val ASF_HEADER = intArrayOf(
         0x30, 0x26, 0xB2, 0x75, 0x8E, 0x66, 0xCF, 0x11,
         0xA6, 0xD9, 0x00, 0xAA, 0x00, 0x62, 0xCE, 0x6C
     )
-    private val YAML_LINE = Regex("""(?m)^\w+:\s+.+""")
+
+    /** Sizes of the DIB headers that follow a BMP file header. */
+    private val BMP_DIB_HEADER_SIZES = setOf(12L, 16L, 40L, 52L, 56L, 64L, 108L, 124L)
+    private val SHELLS = setOf("sh", "bash", "zsh", "dash", "ksh", "mksh", "ash")
+    private val WHITESPACE = Regex("""\s+""")
+    private val YAML_KEY = Regex("""^\s*[\w.-]+:(\s.*)?$""")
+    private val YAML_ITEM = Regex("""^\s*-\s+\S.*$""")
+    private val MARKDOWN_HINT = Regex(
+        """(?m)^(#{1,6} \S|```|- \[[ xX]] )|\*\*[^*\n]+\*\*|\[[^\]\n]+]\([^)\s]+\)"""
+    )
 
     /** Types a source app reports when it knows nothing about the content. */
     private val GENERIC_PROVIDER_MIMES = setOf(
@@ -172,8 +185,8 @@ object MimeDetector {
                 magic(FileType.IMAGE, "image/gif", "GIF87a/GIF89a prefix")
             ascii(header, 0, "RIFF") && ascii(header, 8, "WEBP") ->
                 magic(FileType.IMAGE, "image/webp", "RIFF/WEBP signature")
-            ascii(header, 0, "BM") ->
-                magic(FileType.IMAGE, "image/bmp", "BM signature")
+            isBmp(header) ->
+                magic(FileType.IMAGE, "image/bmp", "BM signature with a DIB header")
             matchBytes(header, 0x49, 0x49, 0x2A, 0x00) ||
                 matchBytes(header, 0x4D, 0x4D, 0x00, 0x2A) ->
                 magic(FileType.IMAGE, "image/tiff", "TIFF byte-order signature")
@@ -191,11 +204,11 @@ object MimeDetector {
             ascii(header, 0, "ITSF") ->
                 magic(FileType.DOCUMENT, MimeTypes.CHM, "ITSF (CHM) signature")
 
-            // Fonts
-            matchBytes(header, 0x00, 0x01, 0x00, 0x00) ->
-                magic(FileType.FONT, "font/ttf", "TrueType sfnt signature")
-            ascii(header, 0, "OTTO") ->
-                magic(FileType.FONT, "font/otf", "OpenType OTTO signature")
+            // Fonts. The sfnt version alone also starts Access databases ("Standard Jet DB").
+            matchBytes(header, 0x00, 0x01, 0x00, 0x00) && hasSfntTables(header) ->
+                magic(FileType.FONT, "font/ttf", "TrueType sfnt header")
+            ascii(header, 0, "OTTO") && hasSfntTables(header) ->
+                magic(FileType.FONT, "font/otf", "OpenType OTTO header")
             ascii(header, 0, "wOFF") ->
                 magic(FileType.FONT, "font/woff", "WOFF signature")
             ascii(header, 0, "wOF2") ->
@@ -284,7 +297,13 @@ object MimeDetector {
         val brand = String(header, 8, minOf(4, header.size - 8), Charsets.ISO_8859_1)
         val normalizedBrand = brand.lowercase(Locale.ROOT)
         val (type, mime) = when (normalizedBrand) {
-            "heic", "heix", "hevc", "hevx", "mif1", "msf1" -> FileType.IMAGE to "image/heic"
+            "heic", "heix", "hevc", "hevx" -> FileType.IMAGE to "image/heic"
+            // Generic HEIF brands; AVIF files name themselves among the compatible brands.
+            "mif1", "msf1" -> if ("avif" in compatibleBrands(header)) {
+                FileType.IMAGE to "image/avif"
+            } else {
+                FileType.IMAGE to "image/heic"
+            }
             "avif", "avis" -> FileType.IMAGE to "image/avif"
             "m4a ", "m4b ", "m4p " -> FileType.AUDIO to "audio/mp4"
             "qt  " -> FileType.VIDEO to "video/quicktime"
@@ -295,6 +314,18 @@ object MimeDetector {
             }
         }
         return magic(type, mime, "ISO BMFF ftyp brand '${brand.trim()}'")
+    }
+
+    /** Compatible brands listed after the major brand and minor version of the ftyp box. */
+    private fun compatibleBrands(header: ByteArray): List<String> {
+        val boxSize = ((header[0].toInt() and 0xFF) shl 24) or
+            ((header[1].toInt() and 0xFF) shl 16) or
+            ((header[2].toInt() and 0xFF) shl 8) or
+            (header[3].toInt() and 0xFF)
+        val end = minOf(boxSize, header.size, MAX_FTYP_BYTES)
+        return (16..end - 4 step 4).map {
+            String(header, it, 4, Charsets.ISO_8859_1).lowercase(Locale.ROOT)
+        }
     }
 
     /** ASF holds both WMV and WMA; only the extension tells them apart cheaply. */
@@ -432,12 +463,13 @@ object MimeDetector {
         val content = String(header, 0, minOf(header.size, 1024), Charsets.UTF_8)
 
         if (header[0] == '#'.code.toByte() && header[1] == '!'.code.toByte()) {
+            // Only the interpreter line counts; later lines may mention other languages.
+            val program = shebangProgram(content.lineSequence().first()) ?: return null
             val (mime, language) = when {
-                content.contains("python") -> "text/x-python" to "Python"
-                content.contains("/bin/sh") || content.contains("/bin/bash") ->
-                    "text/x-shellscript" to "shell"
-                content.contains("node") -> "application/javascript" to "Node.js"
-                content.contains("kotlin") -> "text/x-kotlin" to "Kotlin"
+                program.startsWith("python") -> "text/x-python" to "Python"
+                program in SHELLS -> "text/x-shellscript" to "shell"
+                program.startsWith("node") -> "application/javascript" to "Node.js"
+                program.startsWith("kotlin") -> "text/x-kotlin" to "Kotlin"
                 else -> return null
             }
             return result(
@@ -459,12 +491,24 @@ object MimeDetector {
         }
     }
 
+    /** Program on a "#!" line: "python3" for "#!/usr/bin/python3" and "#!/usr/bin/env python3". */
+    private fun shebangProgram(line: String): String? {
+        val words = line.removePrefix("#!").trim().split(WHITESPACE).filter { it.isNotEmpty() }
+        val command = words.firstOrNull() ?: return null
+        val program = if (command.substringAfterLast('/') == "env") {
+            words.drop(1).firstOrNull { !it.startsWith("-") }
+        } else {
+            command
+        }
+        return program?.substringAfterLast('/')
+    }
+
     private fun structuredTextMime(sample: String): String? {
         val content = sample.trim()
         if (content.isEmpty()) return null
         val lower = content.lowercase(Locale.ROOT)
         return when {
-            content.startsWith("{") || content.startsWith("[") -> "application/json"
+            looksLikeJson(content) -> "application/json"
             isSvg(lower) -> "image/svg+xml"
             lower.startsWith("<?xml") -> "text/xml"
             content.startsWith("<") -> {
@@ -474,12 +518,38 @@ object MimeDetector {
                     "text/xml"
                 }
             }
-            content.startsWith("---") || YAML_LINE.containsMatchIn(content) -> "text/yaml"
-            content.startsWith("# ") || content.contains("**") || content.contains("- [ ]") ->
-                "text/markdown"
+            looksLikeYaml(content) -> "text/yaml"
+            MARKDOWN_HINT.containsMatchIn(content) -> "text/markdown"
             isCsv(content) -> "text/csv"
             else -> null
         }
+    }
+
+    /** An object starting with a key, or an array starting with a value; "[section]" is INI or TOML. */
+    private fun looksLikeJson(content: String): Boolean {
+        val rest = content.drop(1).trimStart()
+        val next = rest.firstOrNull() ?: return false
+        return when (content.first()) {
+            '{' -> next == '"' || next == '}'
+            '[' -> next in "{[\"]-0123456789" ||
+                rest.startsWith("true") || rest.startsWith("false") || rest.startsWith("null")
+            else -> false
+        }
+    }
+
+    /**
+     * A "---" document marker, or a first line that is a key and mostly keys and list
+     * items after it. A single "Note: ..." line in ordinary text is not enough.
+     */
+    private fun looksLikeYaml(content: String): Boolean {
+        if (content.lineSequence().first().trimEnd() == "---") return true
+        val lines = content.lineSequence()
+            .filter { it.isNotBlank() && !it.trimStart().startsWith("#") }
+            .take(YAML_SAMPLE_LINES)
+            .toList()
+        if (lines.size < 2 || !YAML_KEY.matches(lines.first())) return false
+        val structured = lines.count { YAML_KEY.matches(it) || YAML_ITEM.matches(it) }
+        return structured * 10 >= lines.size * 8
     }
 
     /** SVG when the first element is svg, possibly after an XML prolog or comments. */
@@ -528,6 +598,18 @@ object MimeDetector {
     private fun hasSyncBytes(header: ByteArray, start: Int, packetSize: Int): Boolean =
         header.size > start + packetSize * 3 &&
             (0..3).all { header[start + it * packetSize] == 0x47.toByte() }
+
+    /** "BM" also starts ordinary text, so the DIB header size must be a known one too. */
+    private fun isBmp(header: ByteArray): Boolean =
+        ascii(header, 0, "BM") && LittleEndian.u32(header, 14) in BMP_DIB_HEADER_SIZES
+
+    /** A plausible table count and a printable first table tag after the sfnt version. */
+    private fun hasSfntTables(header: ByteArray): Boolean {
+        if (header.size < 16) return false
+        val tables = ((header[4].toInt() and 0xFF) shl 8) or (header[5].toInt() and 0xFF)
+        return tables in 1..MAX_SFNT_TABLES &&
+            (12 until 16).all { (header[it].toInt() and 0xFF) in 0x20..0x7E }
+    }
 
     private fun isTorrent(header: ByteArray): Boolean {
         if (header.size < 12 || header[0] != 'd'.code.toByte()) return false
